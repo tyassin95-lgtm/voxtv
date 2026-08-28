@@ -38,7 +38,7 @@ them on every launch.
      repository"_ → click **I understand my workflows, go ahead and enable them**.
 3. In the left sidebar pick **Build Fire TV APK** → **Run workflow** →
    choose the branch → **Run workflow**.
-4. Wait ~5 minutes for the green tick.
+4. Wait ~4 minutes for the green tick.
 5. Get the APK, either way:
    - **Artifact:** open the finished run → **Artifacts** → `voxtv-firetv-apk`
      (downloads as a `.zip`, unzip it to get `voxtv-firetv.apk`), or
