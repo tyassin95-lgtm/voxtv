@@ -65,6 +65,12 @@ class LocalServer(
   // ------------------------------------------------------------------ handlers
 
   private fun serveStream(session: IHTTPSession, query: Map<String, String>): ServerResponse {
+    if (query["release"] == "1") {
+      // The player closed a stream: hand the provider its connection back now
+      // instead of when the pool happens to expire.
+      IptvProxy.releasePooledConnections()
+      return ServerResponse.text(200, "", "text/plain")
+    }
     val target = IptvProxy.decodeTargetUrl(query["u"])
     if (query["probe"] == "1") return IptvProxy.probe(target)
     val range = session.headers["range"]

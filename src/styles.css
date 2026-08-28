@@ -53,7 +53,9 @@
     cursor: pointer;
   }
 
-  h1, h2, h3 {
+  h1,
+  h2,
+  h3 {
     text-wrap: balance;
   }
 
@@ -66,7 +68,9 @@
     color: white;
   }
 
-  input, textarea, select {
+  input,
+  textarea,
+  select {
     font: inherit;
   }
 
@@ -77,7 +81,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
@@ -85,7 +91,9 @@
   }
 }
 
-html, body, #app {
+html,
+body,
+#app {
   min-height: 100dvh;
 }
 
@@ -102,6 +110,40 @@ html, body, #app {
 .tv-mode :focus-visible {
   outline: 3px solid var(--color-accent);
   outline-offset: 3px;
+}
+
+/*
+ * Grid tiles and channel rows carry their own `.tv-focused` ring driven by the
+ * d-pad cursor. Letting :focus-visible paint them too showed two highlights at
+ * once whenever DOM focus lagged a frame behind the cursor.
+ */
+.tv-mode [data-tv-index]:focus-visible {
+  outline: none;
+}
+
+/*
+ * A TV has no pointer, but the web view still reports one parked over the
+ * top-left of the page, so the first tile sat permanently in its hover state.
+ */
+.tv-mode .poster-scale:hover {
+  transform: none;
+  box-shadow: none;
+  z-index: auto;
+}
+
+.tv-mode .poster-scale.tv-focused {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-poster);
+  z-index: 2;
+}
+
+.tv-mode [data-hover-overlay] {
+  opacity: 0;
+}
+
+.tv-mode .tv-focused [data-hover-overlay] {
+  opacity: 1;
+  background-color: rgb(8 8 10 / 0.35);
 }
 
 .tv-mode button,
@@ -177,6 +219,5 @@ html, body, #app {
 
 .vignette {
   background:
-    radial-gradient(120% 80% at 50% 0%, rgb(229 9 20 / 0.08), transparent 45%),
-    var(--color-bg);
+    radial-gradient(120% 80% at 50% 0%, rgb(229 9 20 / 0.08), transparent 45%), var(--color-bg);
 }

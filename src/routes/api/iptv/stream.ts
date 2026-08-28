@@ -1,5 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { decodeTargetUrl, optionsResponse, proxyProbe, proxyStream } from "@/lib/iptv/server-proxy";
+import {
+  decodeTargetUrl,
+  optionsResponse,
+  proxyProbe,
+  proxyStream,
+  releaseResponse,
+} from "@/lib/iptv/server-proxy";
 
 export const Route = createFileRoute("/api/iptv/stream")({
   server: {
@@ -8,6 +14,7 @@ export const Route = createFileRoute("/api/iptv/stream")({
       GET: async ({ request }) => {
         try {
           const url = new URL(request.url);
+          if (url.searchParams.get("release") === "1") return releaseResponse();
           const target = decodeTargetUrl(url.searchParams.get("u"));
           if (url.searchParams.get("probe") === "1") {
             return await proxyProbe(target, request);

@@ -3,8 +3,6 @@ import {
   ArrowLeft,
   AudioLines,
   Heart,
-  Maximize,
-  Minimize,
   Pause,
   Play,
   FastForward,
@@ -20,6 +18,7 @@ import {
   ASPECT_MODES,
   loadAspect,
   loadVolume,
+  confidentEngine,
   playbackCandidates,
   saveAspect,
   saveVolume,
@@ -47,7 +46,7 @@ import { useIsFavorite } from "@/lib/iptv/store";
 import type { ContentKind, Playable, WatchProgress } from "@/lib/iptv/types";
 import { cn, formatDuration } from "@/lib/utils";
 import { iptvLog, iptvWarn, redactUrl } from "@/lib/iptv/log";
-import { probeStream } from "@/lib/iptv/proxy";
+import { probeStream, releaseStreams } from "@/lib/iptv/proxy";
 import { engineForKind, type StreamKind } from "@/lib/iptv/stream-detect";
 import { unwrapProxiedUrl } from "@/lib/iptv/playback-urls";
 import { enableTvMode, seekStep } from "@/lib/iptv/remote";
@@ -79,6 +78,8 @@ interface MpegtsLib {
 }
 
 const LIVE_DROPOUT_RETRIES = 2;
+const VOLUME_STEP = 0.05;
+const VOLUME_COARSE = 0.2;
 
 function engineFromProbe(kind: StreamKind, fallback: Engine, source: string): Engine {
   if (kind === "unknown") return fallback;
@@ -113,13 +114,13 @@ export function VideoPlayer({ item }: { item: Playable }) {
   const [muted, setMuted] = useState(false);
   const [aspect, setAspect] = useState<AspectMode>(loadAspect);
   const [chrome, setChrome] = useState(true);
-  const [fullscreen, setFullscreen] = useState(false);
   const [subOptions, setSubOptions] = useState<SubtitleOption[]>([]);
   const [activeSub, setActiveSub] = useState<string | null>(null);
   const [externalSubs, setExternalSubs] = useState<LoadedSubtitle[]>([]);
   const [subMenu, setSubMenu] = useState(false);
   const [audioDelay, setAudioDelay] = useState(0);
   const [audioSyncOpen, setAudioSyncOpen] = useState(false);
+  const [volumeOpen, setVolumeOpen] = useState(false);
   const [audioSyncError, setAudioSyncError] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const trackMapRef = useRef(new Map<string, TextTrack>());
@@ -127,14 +128,18 @@ export function VideoPlayer({ item }: { item: Playable }) {
   const pendingSubRef = useRef<string | null>(null);
   const subMenuRef = useRef(false);
   const audioSyncRef = useRef(false);
+  const volumeOpenRef = useRef(false);
   const audioDelayRef = useRef(0);
   subMenuRef.current = subMenu;
   audioSyncRef.current = audioSyncOpen;
+  volumeOpenRef.current = volumeOpen;
   audioDelayRef.current = audioDelay;
   const [seekFlash, setSeekFlash] = useState<string | null>(null);
   const [playerCtrl, setPlayerCtrl] = useState("play");
   const chromeRef = useRef(true);
   const seekHoldRef = useRef(0);
+  const seekPendingRef = useRef<number | null>(null);
+  const seekTimer = useRef<number | null>(null);
   const flashTimer = useRef<number | null>(null);
   chromeRef.current = chrome;
   const favKind: ContentKind =
@@ -164,6 +169,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
       video.pause();
       video.removeAttribute("src");
       video.srcObject = null;
+      // Without load() the element keeps the old request open, and providers
+      // that cap concurrent connections then stall the next title.
+      video.load();
     }
   }, []);
 
@@ -254,6 +262,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
     candidatesRef.current = playbackCandidates(item.url, item.kind, item.urls ?? []);
     attemptRef.current = 0;
     const probeCache = new Map<string, Awaited<ReturnType<typeof probeStream>>>();
+    const probeAbort = new AbortController();
     iptvLog(
       "player",
       "plan",
@@ -411,19 +420,25 @@ export function VideoPlayer({ item }: { item: Playable }) {
       try {
         let engine = candidate.engine;
         const source = unwrapProxiedUrl(candidate.source);
-        let probe = probeCache.get(source);
-        if (!probe) {
-          probe = await probeStream(source);
-          probeCache.set(source, probe);
-          iptvLog("player", "probe", redactUrl(source), probe.status, probe.kind);
-        }
-        if (!isCurrent()) return;
-        if (probe.status >= 400) {
-          failCurrentRef.current(`upstream ${probe.status}`);
-          return;
-        }
-        if (probe.ok && probe.kind !== "unknown") {
-          engine = engineFromProbe(probe.kind, candidate.engine, source);
+        const known = confidentEngine(source);
+        if (known) {
+          // The URL already says what this is; skip the extra round trip.
+          engine = known;
+        } else {
+          let probe = probeCache.get(source);
+          if (!probe) {
+            probe = await probeStream(source, probeAbort.signal);
+            probeCache.set(source, probe);
+            iptvLog("player", "probe", redactUrl(source), probe.status, probe.kind);
+          }
+          if (!isCurrent()) return;
+          if (probe.status >= 400) {
+            failCurrentRef.current(`upstream ${probe.status}`);
+            return;
+          }
+          if (probe.ok && probe.kind !== "unknown") {
+            engine = engineFromProbe(probe.kind, candidate.engine, source);
+          }
         }
         await attachEngine({ ...candidate, engine }, engine);
       } catch (err) {
@@ -443,9 +458,11 @@ export function VideoPlayer({ item }: { item: Playable }) {
     void startPlayback();
     return () => {
       cancelled = true;
+      probeAbort.abort();
       destroyEngines();
       tearingDownRef.current = false;
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
+      releaseStreams();
     };
   }, [item.url, item.isLive, item.kind, item.urls, destroyEngines]);
 
@@ -579,6 +596,15 @@ export function VideoPlayer({ item }: { item: Playable }) {
   // Downloaded subtitles are object URLs; drop them when the player goes away.
   useEffect(() => releaseSubtitleUrls, []);
 
+  // A queued seek belongs to the title that was playing when it was queued.
+  useEffect(() => {
+    return () => {
+      seekPendingRef.current = null;
+      if (seekTimer.current) window.clearTimeout(seekTimer.current);
+      seekTimer.current = null;
+    };
+  }, [item.id]);
+
   // Sync offsets belong to one stream, never to the next thing you open.
   useEffect(() => {
     setAudioDelay(0);
@@ -645,6 +671,10 @@ export function VideoPlayer({ item }: { item: Playable }) {
 
   useBackHandler(() => {
     if (subMenu) return false;
+    if (volumeOpen) {
+      setVolumeOpen(false);
+      return true;
+    }
     if (audioSyncOpen) {
       setAudioSyncOpen(false);
       return true;
@@ -655,7 +685,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
     }
     leavePlayer();
     return true;
-  }, [subMenu, audioSyncOpen, item.kind, item.showId]);
+  }, [subMenu, audioSyncOpen, volumeOpen, item.kind, item.showId]);
 
   useRemoteHandler(
     (event) => {
@@ -667,8 +697,25 @@ export function VideoPlayer({ item }: { item: Playable }) {
       if (subMenuRef.current) return false;
       enableTvMode();
 
-      // While the sync popover is open the d-pad tunes the offset; media keys
-      // still fall through to normal playback control.
+      // While a popover is open the d-pad tunes its value; media keys still
+      // fall through to normal playback control.
+      if (volumeOpenRef.current) {
+        if (action === "left") changeVolume(volumeRef.current - VOLUME_STEP);
+        else if (action === "right") changeVolume(volumeRef.current + VOLUME_STEP);
+        else if (action === "up") changeVolume(volumeRef.current + VOLUME_COARSE);
+        else if (action === "down") changeVolume(volumeRef.current - VOLUME_COARSE);
+        else if (action === "select") setVolumeOpen(false);
+        if (
+          action === "left" ||
+          action === "right" ||
+          action === "up" ||
+          action === "down" ||
+          action === "select"
+        ) {
+          return true;
+        }
+      }
+
       if (audioSyncRef.current) {
         if (action === "left") changeAudioDelay(audioDelayRef.current - AUDIO_DELAY_STEP_MS);
         else if (action === "right") changeAudioDelay(audioDelayRef.current + AUDIO_DELAY_STEP_MS);
@@ -772,11 +819,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
       e.preventDefault();
       if (e.key === "k") togglePlay();
       if (e.key === "f") toggleFullscreen();
-      if (e.key === "m") {
-        video.muted = !video.muted;
-        mutedRef.current = video.muted;
-        setMuted(video.muted);
-      }
+      if (e.key === "m") toggleMute();
       bumpChrome();
     };
     window.addEventListener("keydown", onKey);
@@ -787,9 +830,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
     document.querySelector<HTMLElement>(`[data-player-ctrl="${playerCtrl}"]`)?.focus();
   }, [playerCtrl, chrome]);
 
-  function seekBy(delta: number): boolean {
-    const video = videoRef.current;
-    if (!video) return false;
+  function seekBounds(video: HTMLVideoElement): { min: number; max: number } | null {
     const ranges = video.seekable;
     let min = 0;
     let max =
@@ -798,45 +839,88 @@ export function VideoPlayer({ item }: { item: Playable }) {
       min = ranges.start(0);
       max = ranges.end(ranges.length - 1);
     } else if (item.isLive) {
-      return false;
+      return null;
     }
-    const next = Math.max(min, Math.min(max, video.currentTime + delta));
+    return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+  }
+
+  /**
+   * Every `currentTime` write restarts the download at a new offset, so holding
+   * fast-forward used to fire a request per press. Presses are accumulated and
+   * committed once the user stops, while the scrubber follows immediately.
+   */
+  function seekBy(delta: number): boolean {
+    const video = videoRef.current;
+    if (!video) return false;
+    const bounds = seekBounds(video);
+    if (!bounds) return false;
+    const base = seekPendingRef.current ?? video.currentTime;
+    const next = Math.max(bounds.min, Math.min(bounds.max, base + delta));
     if (!Number.isFinite(next)) return false;
-    video.currentTime = next;
+    seekPendingRef.current = next;
     setCurrent(next);
+    if (seekTimer.current) window.clearTimeout(seekTimer.current);
+    seekTimer.current = window.setTimeout(commitSeek, 320);
     return true;
+  }
+
+  function commitSeek() {
+    const video = videoRef.current;
+    const target = seekPendingRef.current;
+    seekPendingRef.current = null;
+    if (seekTimer.current) {
+      window.clearTimeout(seekTimer.current);
+      seekTimer.current = null;
+    }
+    if (!video || target === null) return;
+    video.currentTime = target;
   }
 
   function onSeek(value: number) {
     const video = videoRef.current;
     if (!video || item.isLive) return;
-    video.currentTime = value;
+    seekPendingRef.current = value;
     setCurrent(value);
+    if (seekTimer.current) window.clearTimeout(seekTimer.current);
+    seekTimer.current = window.setTimeout(commitSeek, 200);
   }
 
   function changeVolume(v: number) {
     const video = videoRef.current;
-    volumeRef.current = v;
-    setVolume(v);
-    saveVolume(v);
+    const level = Math.min(1, Math.max(0, Math.round(v * 100) / 100));
+    volumeRef.current = level;
+    setVolume(level);
+    saveVolume(level);
     if (video) {
-      video.volume = v;
-      video.muted = v === 0;
-      mutedRef.current = v === 0;
-      setMuted(v === 0);
+      video.volume = level;
+      video.muted = level === 0;
+      mutedRef.current = level === 0;
+      setMuted(level === 0);
     }
+    bumpChrome();
   }
 
+  function toggleMute() {
+    const video = videoRef.current;
+    if (!video) return;
+    const next = !(video.muted || volumeRef.current === 0);
+    if (!next && volumeRef.current === 0) {
+      // Nothing to unmute to — put the level back to something audible.
+      changeVolume(1);
+      return;
+    }
+    video.muted = next;
+    mutedRef.current = next;
+    setMuted(next);
+    bumpChrome();
+  }
+
+  /** Kept for the browser build; on a TV the video already fills the screen. */
   function toggleFullscreen() {
     const el = wrapRef.current;
     if (!el) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen();
-      setFullscreen(false);
-    } else {
-      el.requestFullscreen().catch(() => undefined);
-      setFullscreen(true);
-    }
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else el.requestFullscreen().catch(() => undefined);
   }
 
   function cycleAspect() {
@@ -994,18 +1078,15 @@ export function VideoPlayer({ item }: { item: Playable }) {
                 </span>
               </>
             )}
-            <div className="ml-1 flex items-center gap-2">
+            <div className="relative ml-1 flex items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label={muted ? "Unmute" : "Mute"}
-                data-player-ctrl="mute"
+                aria-label="Volume"
+                data-player-ctrl="volume"
                 onClick={() => {
-                  const video = videoRef.current;
-                  if (!video) return;
-                  video.muted = !video.muted;
-                  mutedRef.current = video.muted;
-                  setMuted(video.muted);
+                  setAudioSyncOpen(false);
+                  setVolumeOpen((open) => !open);
                 }}
               >
                 {muted || volume === 0 ? (
@@ -1023,7 +1104,44 @@ export function VideoPlayer({ item }: { item: Playable }) {
                 onChange={(e) => changeVolume(Number(e.target.value))}
                 className="hidden w-24 accent-accent sm:block"
                 aria-label="Volume"
+                tabIndex={-1}
               />
+              {volumeOpen && (
+                <div className="absolute bottom-12 left-0 w-56 rounded-md bg-elevated p-3 shadow-[var(--shadow-poster)]">
+                  <p className="text-sm font-medium">Volume</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      size="icon-sm"
+                      aria-label="Volume down"
+                      onClick={() => changeVolume(volume - VOLUME_STEP)}
+                    >
+                      −
+                    </Button>
+                    <span className="flex-1 text-center font-display text-lg tabular-nums">
+                      {muted ? "Muted" : `${Math.round(volume * 100)}%`}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      size="icon-sm"
+                      aria-label="Volume up"
+                      onClick={() => changeVolume(volume + VOLUME_STEP)}
+                    >
+                      +
+                    </Button>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-2 h-9 w-full rounded-sm text-xs text-muted hover:bg-surface hover:text-fg"
+                    onClick={toggleMute}
+                  >
+                    {muted || volume === 0 ? "Unmute" : "Mute"}
+                  </button>
+                  <p className="mt-1 text-center text-[0.7rem] leading-tight text-subtle">
+                    Left / right on the remote
+                  </p>
+                </div>
+              )}
             </div>
             <div className="ml-auto flex items-center gap-1">
               <Button
@@ -1045,7 +1163,10 @@ export function VideoPlayer({ item }: { item: Playable }) {
                     size="icon"
                     aria-label="Audio sync"
                     data-player-ctrl="sync"
-                    onClick={() => setAudioSyncOpen((open) => !open)}
+                    onClick={() => {
+                      setVolumeOpen(false);
+                      setAudioSyncOpen((open) => !open);
+                    }}
                   >
                     <AudioLines className={cn("size-5", audioDelay > 0 && "text-accent")} />
                   </Button>
@@ -1094,15 +1215,6 @@ export function VideoPlayer({ item }: { item: Playable }) {
               )}
               <Button variant="ghost" size="sm" data-player-ctrl="aspect" onClick={cycleAspect}>
                 {ASPECT_MODES.find((m) => m.id === aspect)?.label}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-                data-player-ctrl="full"
-                onClick={toggleFullscreen}
-              >
-                {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
               </Button>
             </div>
           </div>

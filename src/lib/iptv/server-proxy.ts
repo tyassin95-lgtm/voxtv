@@ -1,5 +1,10 @@
 import { iptvLog, iptvWarn, redactUrl } from "./log";
-import { looksLikePlaylistUrl, mimeForKind, sniffStreamBytes, type StreamKind } from "./stream-detect";
+import {
+  looksLikePlaylistUrl,
+  mimeForKind,
+  sniffStreamBytes,
+  type StreamKind,
+} from "./stream-detect";
 
 const API_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -31,9 +36,17 @@ function corsHeaders(extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("Access-Control-Allow-Headers", "Range, Content-Type");
-  headers.set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type, X-Stream-Format");
+  headers.set(
+    "Access-Control-Expose-Headers",
+    "Content-Length, Content-Range, Accept-Ranges, Content-Type, X-Stream-Format",
+  );
   headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   return headers;
+}
+
+/** Matches the app's `?release=1` call; nothing is pooled here to release. */
+export function releaseResponse(): Response {
+  return new Response(null, { status: 204, headers: corsHeaders() });
 }
 
 export function optionsResponse(): Response {
@@ -59,11 +72,14 @@ export function rewriteM3u8(text: string, playlistUrl: string): string {
       const trimmed = line.trim();
       if (!trimmed) return line;
       if (trimmed.startsWith("#")) {
-        return line.replace(/URI=(?:"([^"]+)"|'([^']+)'|([^,\s]+))/g, (_all, d: string, s: string, u: string) => {
-          const uri = d || s || u;
-          if (!uri || uri.startsWith("data:")) return _all;
-          return `URI="${proxyStreamPath(resolveRef(playlistUrl, uri))}"`;
-        });
+        return line.replace(
+          /URI=(?:"([^"]+)"|'([^']+)'|([^,\s]+))/g,
+          (_all, d: string, s: string, u: string) => {
+            const uri = d || s || u;
+            if (!uri || uri.startsWith("data:")) return _all;
+            return `URI="${proxyStreamPath(resolveRef(playlistUrl, uri))}"`;
+          },
+        );
       }
       return proxyStreamPath(resolveRef(playlistUrl, trimmed));
     })
@@ -150,7 +166,13 @@ export async function proxyFetch(url: string, request: Request): Promise<Respons
 
 function passthroughHeaders(res: Response, kind: StreamKind): Headers {
   const headers = corsHeaders();
-  const pass = ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"];
+  const pass = [
+    "content-type",
+    "content-length",
+    "content-range",
+    "accept-ranges",
+    "cache-control",
+  ];
   for (const key of pass) {
     const value = res.headers.get(key);
     if (value) headers.set(key, value);
@@ -217,7 +239,10 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 function errorResponse(status: number, message: string): Response {
   return new Response(message, {
     status,
-    headers: corsHeaders({ "content-type": "text/plain; charset=utf-8", "x-stream-format": "unknown" }),
+    headers: corsHeaders({
+      "content-type": "text/plain; charset=utf-8",
+      "x-stream-format": "unknown",
+    }),
   });
 }
 
@@ -230,7 +255,11 @@ export async function proxyProbe(url: string, request: Request): Promise<Respons
     const payload = {
       ok: res.status < 400,
       status: res.status,
-      kind: peeked.kind === "unknown" && looksLikePlaylistUrl(url, res.headers.get("content-type") || "") ? "hls" : peeked.kind,
+      kind:
+        peeked.kind === "unknown" &&
+        looksLikePlaylistUrl(url, res.headers.get("content-type") || "")
+          ? "hls"
+          : peeked.kind,
       finalUrl,
     };
     iptvLog("proxy", "probe", payload.kind, payload.status, redactUrl(finalUrl));
@@ -261,7 +290,10 @@ export async function proxyStream(url: string, request: Request): Promise<Respon
   if (playlistHint || /octet-stream|mp2t|video\//i.test(type) || !type) {
     const peeked = await peekBody(res);
     iptvLog("proxy", "sniff", peeked.kind, redactUrl(finalUrl), type || "no-type");
-    if (peeked.kind === "hls" || (playlistHint && peeked.kind === "unknown" && peeked.head.length && looksLikeExt(peeked.head))) {
+    if (
+      peeked.kind === "hls" ||
+      (playlistHint && peeked.kind === "unknown" && peeked.head.length && looksLikeExt(peeked.head))
+    ) {
       const text = await readStreamText(peeked.rest);
       const rewritten = text.trimStart().startsWith("#EXT") ? rewriteM3u8(text, finalUrl) : text;
       return new Response(rewritten, {
@@ -273,7 +305,10 @@ export async function proxyStream(url: string, request: Request): Promise<Respon
         }),
       });
     }
-    const headers = passthroughHeaders(res, peeked.kind === "unknown" && playlistHint ? "ts" : peeked.kind);
+    const headers = passthroughHeaders(
+      res,
+      peeked.kind === "unknown" && playlistHint ? "ts" : peeked.kind,
+    );
     return new Response(peeked.rest, {
       status: res.status,
       headers,

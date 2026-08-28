@@ -31,7 +31,10 @@ export function PosterCard({
           loading="lazy"
           className="absolute inset-0 size-full object-cover"
         />
-        <span className="absolute inset-0 flex items-center justify-center bg-bg/0 opacity-0 transition-[opacity,background-color] duration-200 group-hover:bg-bg/35 group-hover:opacity-100 group-focus-visible:bg-bg/35 group-focus-visible:opacity-100">
+        <span
+          data-hover-overlay
+          className="absolute inset-0 flex items-center justify-center bg-bg/0 opacity-0 transition-[opacity,background-color] duration-200 group-hover:bg-bg/35 group-hover:opacity-100 group-focus-visible:bg-bg/35 group-focus-visible:opacity-100"
+        >
           <span className="flex size-12 items-center justify-center rounded-full bg-accent text-accent-fg">
             <Play className="ml-0.5 size-5 fill-current" />
           </span>
@@ -111,14 +114,20 @@ export function WideCard({
           loading="lazy"
           className="absolute inset-0 size-full object-cover"
         />
-        <span className="absolute inset-0 flex items-center justify-center bg-bg/0 opacity-0 transition-[opacity] duration-200 group-hover:bg-bg/35 group-hover:opacity-100">
+        <span
+          data-hover-overlay
+          className="absolute inset-0 flex items-center justify-center bg-bg/0 opacity-0 transition-[opacity] duration-200 group-hover:bg-bg/35 group-hover:opacity-100"
+        >
           <span className="flex size-11 items-center justify-center rounded-full bg-accent text-accent-fg">
             <Play className="ml-0.5 size-5 fill-current" />
           </span>
         </span>
         {progress !== undefined && (
           <span className="absolute inset-x-2 bottom-2 h-1 overflow-hidden rounded-full bg-fg/25">
-            <span className="block h-full bg-accent" style={{ width: `${Math.min(100, progress * 100)}%` }} />
+            <span
+              className="block h-full bg-accent"
+              style={{ width: `${Math.min(100, progress * 100)}%` }}
+            />
           </span>
         )}
       </span>

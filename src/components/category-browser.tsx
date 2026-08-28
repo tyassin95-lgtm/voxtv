@@ -77,9 +77,14 @@ export function CategoryBrowser({
   // The grid highlight only appears once a remote/d-pad is actually in use —
   // on mouse/touch the first tile must not look pre-selected.
   const [tvActive, setTvActive] = useState(false);
+  // Which category the d-pad is sitting on. Moving through the list must not
+  // reload the grid — only pressing select (or stepping right into it) does.
+  const [catCursor, setCatCursor] = useState<string>(categoryId);
   const [gridIndex, setGridIndex] = useState(0);
   const [sortCursor, setSortCursor] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
+  const tvActiveRef = useRef(false);
+  tvActiveRef.current = tvActive;
   const columns = useColumnCount();
   const allId = allCategoryId(kind);
 
@@ -87,6 +92,10 @@ export function CategoryBrowser({
     if (typeof sessionStorage === "undefined") return;
     sessionStorage.setItem(storedCategoryKey(kind), categoryId);
   }, [kind, categoryId]);
+
+  useEffect(() => {
+    setCatCursor(categoryId);
+  }, [categoryId]);
 
   useEffect(() => {
     if (loading) return;
@@ -128,7 +137,10 @@ export function CategoryBrowser({
   }, [items.length]);
 
   useEffect(() => {
-    rememberBrowseList(kind, items.map((item) => item.id));
+    rememberBrowseList(
+      kind,
+      items.map((item) => item.id),
+    );
   }, [kind, items]);
 
   const virtualItems = virtualizer.getVirtualItems();
@@ -153,6 +165,7 @@ export function CategoryBrowser({
 
   function selectCategory(id: string, opts?: { keepDrawer?: boolean }) {
     setCategoryId(id);
+    setCatCursor(id);
     setQuery("");
     if (!opts?.keepDrawer) setDrawerOpen(false);
   }
@@ -172,7 +185,7 @@ export function CategoryBrowser({
         openBtn.focus();
         return;
       }
-      focusCategoryButton(categoryId);
+      focusCategoryButton(catCursor);
       return;
     }
     if (next === "search") {
@@ -235,6 +248,7 @@ export function CategoryBrowser({
     zone,
     gridIndex,
     categoryId,
+    catCursor,
     navIds,
     itemsLength: items.length,
     columns: gridColumns,
@@ -251,6 +265,7 @@ export function CategoryBrowser({
     zone,
     gridIndex,
     categoryId,
+    catCursor,
     navIds,
     itemsLength: items.length,
     columns: gridColumns,
@@ -281,6 +296,8 @@ export function CategoryBrowser({
         return false;
       }
       enableTvMode();
+      const wasActive = tvActiveRef.current;
+      tvActiveRef.current = true;
       setTvActive(true);
 
       const active = document.activeElement as HTMLElement | null;
@@ -288,7 +305,8 @@ export function CategoryBrowser({
       if (active?.dataset.tvIndex !== undefined) currentZone = "grid";
       else if (active?.dataset.tvZone === "search") currentZone = "search";
       else if (active?.dataset.tvZone === "sort") currentZone = "sort";
-      else if (active?.dataset.tvZone === "sidebar" || active?.dataset.catId) currentZone = "sidebar";
+      else if (active?.dataset.tvZone === "sidebar" || active?.dataset.catId)
+        currentZone = "sidebar";
       else if (active?.dataset.tvZone === "cats") currentZone = "sidebar";
       else if (active?.closest("header nav")) currentZone = "header";
       if (currentZone !== state.zone) setZone(currentZone);
@@ -296,7 +314,8 @@ export function CategoryBrowser({
       if (state.sortOpen || currentZone === "sortmenu") {
         const last = state.sortOptions.length - 1;
         if (action === "up") setSortCursor((i) => Math.max(0, i - 1));
-        else if (action === "down" || action === "pagedown") setSortCursor((i) => Math.min(last, i + 1));
+        else if (action === "down" || action === "pagedown")
+          setSortCursor((i) => Math.min(last, i + 1));
         else if (action === "pageup") setSortCursor(0);
         else if (action === "select") {
           const option = state.sortOptions[state.sortCursor];
@@ -319,7 +338,12 @@ export function CategoryBrowser({
           return true;
         }
         if (currentZone === "sort") {
-          setSortCursor(Math.max(0, state.sortOptions.findIndex((option) => option.id === state.sort)));
+          setSortCursor(
+            Math.max(
+              0,
+              state.sortOptions.findIndex((option) => option.id === state.sort),
+            ),
+          );
           setSortOpen(true);
           setZone("sortmenu");
           return true;
@@ -329,7 +353,10 @@ export function CategoryBrowser({
             setDrawerOpen(true);
             return true;
           }
-          if (state.itemsLength) focusZone("grid", 0);
+          const cursor =
+            (document.activeElement as HTMLElement | null)?.dataset.catId || state.catCursor;
+          selectCategory(cursor, { keepDrawer: true });
+          focusCategoryButton(cursor);
           return true;
         }
         const focused = document.activeElement as HTMLElement | null;
@@ -341,45 +368,48 @@ export function CategoryBrowser({
 
       if (currentZone === "header") {
         const links = headerLinks();
-        const current = Math.max(0, links.findIndex((link) => link === document.activeElement));
+        const current = Math.max(
+          0,
+          links.findIndex((link) => link === document.activeElement),
+        );
         if (action === "left" && current > 0) links[current - 1]?.focus();
         else if (action === "right" && current < links.length - 1) links[current + 1]?.focus();
-        else if (action === "down") focusZone(state.itemsLength ? "grid" : "sidebar", state.gridIndex);
+        else if (action === "down")
+          focusZone(state.itemsLength ? "grid" : "sidebar", state.gridIndex);
         return true;
       }
 
       if (currentZone === "sidebar") {
+        const cursor = active?.dataset.catId || state.catCursor;
         if (action === "up" || action === "pageup") {
-          const focused = active?.dataset.catId || state.categoryId;
-          const current = state.navIds.indexOf(focused);
+          const current = state.navIds.indexOf(cursor);
           if (current <= 0) {
             focusZone("header");
             return true;
           }
           const next = state.navIds[current - 1];
           if (next) {
-            selectCategory(next, { keepDrawer: true });
+            setCatCursor(next);
             focusCategoryButton(next);
           }
           return true;
         }
         if (action === "down" || action === "pagedown") {
-          const focused = active?.dataset.catId || state.categoryId;
-          const current = state.navIds.indexOf(focused);
+          const current = state.navIds.indexOf(cursor);
           const from = current === -1 ? 0 : current;
-          if (from >= state.navIds.length - 1) {
-            return true;
-          }
+          if (from >= state.navIds.length - 1) return true;
           const next = state.navIds[from + 1];
           if (next) {
-            selectCategory(next, { keepDrawer: true });
+            setCatCursor(next);
             focusCategoryButton(next);
           }
           return true;
         }
         if (action === "right") {
+          // Stepping into the grid is a deliberate "show me this one".
+          if (cursor !== state.categoryId) selectCategory(cursor, { keepDrawer: true });
           if (state.drawerOpen) setDrawerOpen(false);
-          if (state.itemsLength) focusZone("grid", 0);
+          if (state.itemsLength || cursor !== state.categoryId) focusZone("grid", 0);
           else focusZone("search");
           return true;
         }
@@ -390,17 +420,24 @@ export function CategoryBrowser({
       if (currentZone === "search") {
         if (action === "left") focusZone("sidebar");
         else if (action === "right") focusZone("sort");
-        else if (action === "down" || action === "pagedown") focusZone(state.itemsLength ? "grid" : "sidebar", 0);
+        else if (action === "down" || action === "pagedown")
+          focusZone(state.itemsLength ? "grid" : "sidebar", 0);
         else if (action === "up") focusZone("header");
         return true;
       }
 
       if (currentZone === "sort") {
         if (action === "left") focusZone("search");
-        else if (action === "down" || action === "pagedown") focusZone(state.itemsLength ? "grid" : "sidebar", 0);
+        else if (action === "down" || action === "pagedown")
+          focusZone(state.itemsLength ? "grid" : "sidebar", 0);
         else if (action === "up") focusZone("header");
         else if (action === "right") {
-          setSortCursor(Math.max(0, state.sortOptions.findIndex((option) => option.id === state.sort)));
+          setSortCursor(
+            Math.max(
+              0,
+              state.sortOptions.findIndex((option) => option.id === state.sort),
+            ),
+          );
           setSortOpen(true);
           setZone("sortmenu");
         }
@@ -412,8 +449,15 @@ export function CategoryBrowser({
           focusZone("sidebar");
           return true;
         }
+        if (!wasActive) {
+          // Nothing was highlighted yet: land on the current tile rather than
+          // stepping past the first row.
+          setGridIndex((index) => Math.max(0, Math.min(state.itemsLength - 1, index)));
+          return true;
+        }
         const fromAttr = active?.dataset.tvIndex;
-        const fromIndex = fromAttr !== undefined && fromAttr !== "" ? Number(fromAttr) : state.gridIndex;
+        const fromIndex =
+          fromAttr !== undefined && fromAttr !== "" ? Number(fromAttr) : state.gridIndex;
         const cols = state.columns;
         const atLeft = fromIndex % cols === 0;
         const atTop = fromIndex < cols;
@@ -433,8 +477,19 @@ export function CategoryBrowser({
           setGridIndex(Math.min(state.itemsLength - 1, fromIndex + cols * 5));
           return true;
         }
-        const dir = action === "up" || action === "down" || action === "left" || action === "right" ? action : null;
-        if (dir) setGridIndex(moveGridIndex(Number.isFinite(fromIndex) ? fromIndex : state.gridIndex, cols, state.itemsLength, dir));
+        const dir =
+          action === "up" || action === "down" || action === "left" || action === "right"
+            ? action
+            : null;
+        if (dir)
+          setGridIndex(
+            moveGridIndex(
+              Number.isFinite(fromIndex) ? fromIndex : state.gridIndex,
+              cols,
+              state.itemsLength,
+              dir,
+            ),
+          );
         return true;
       }
 
@@ -517,7 +572,12 @@ export function CategoryBrowser({
                 type="button"
                 data-tv-zone="sort"
                 onClick={() => {
-                  setSortCursor(Math.max(0, sortOptions.findIndex((option) => option.id === sort)));
+                  setSortCursor(
+                    Math.max(
+                      0,
+                      sortOptions.findIndex((option) => option.id === sort),
+                    ),
+                  );
                   setSortOpen((open) => !open);
                   setZone("sortmenu");
                 }}
@@ -546,7 +606,9 @@ export function CategoryBrowser({
                       }}
                       className={cn(
                         "flex h-11 w-full items-center justify-between rounded-sm px-3 text-left text-sm",
-                        index === sortCursor || option.id === sort ? "bg-surface text-fg" : "text-muted",
+                        index === sortCursor || option.id === sort
+                          ? "bg-surface text-fg"
+                          : "text-muted",
                       )}
                     >
                       {option.label}
@@ -659,7 +721,8 @@ function CategorySidebar({
   idPrefix: string;
   onSelect: (id: string) => void;
 }) {
-  const allLabel = kind === "live" ? "All channels" : kind === "show" ? "All TV shows" : "All movies";
+  const allLabel =
+    kind === "live" ? "All channels" : kind === "show" ? "All TV shows" : "All movies";
   return (
     <nav className="cat-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3" aria-label="Categories">
       <p className="px-3 pb-2 text-xs font-semibold tracking-widest text-subtle uppercase">
@@ -761,7 +824,9 @@ function SidebarButton({
     >
       {active && <span className="absolute left-0 h-5 w-0.5 rounded-full bg-accent" />}
       <span className="relative min-w-0 flex-1 truncate">{label}</span>
-      {typeof count === "number" && <span className="ml-2 text-xs tabular-nums text-subtle">{count}</span>}
+      {typeof count === "number" && (
+        <span className="ml-2 text-xs tabular-nums text-subtle">{count}</span>
+      )}
     </button>
   );
 }

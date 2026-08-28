@@ -39,14 +39,14 @@ const KEY_TO_ACTION: Record<string, RemoteAction> = {
   Down: "down",
   Left: "left",
   Right: "right",
-  "UIKeyInputUpArrow": "up",
-  "UIKeyInputDownArrow": "down",
-  "UIKeyInputLeftArrow": "left",
-  "UIKeyInputRightArrow": "right",
+  UIKeyInputUpArrow: "up",
+  UIKeyInputDownArrow: "down",
+  UIKeyInputLeftArrow: "left",
+  UIKeyInputRightArrow: "right",
   Enter: "select",
   NumpadEnter: "select",
   Select: "select",
-  "DPAD_CENTER": "select",
+  DPAD_CENTER: "select",
   Escape: "back",
   Esc: "back",
   BrowserBack: "back",
@@ -205,7 +205,10 @@ export function actionFromKey(event: KeyLike, role: RemoteRole = "ui"): RemoteAc
     if (key === "Tab") return null;
   }
 
-  if (role === "player" && (key === " " || key === "Spacebar" || code === "Space" || keyCode === 32)) {
+  if (
+    role === "player" &&
+    (key === " " || key === "Spacebar" || code === "Space" || keyCode === 32)
+  ) {
     return "playpause";
   }
   if (role === "ui" && (key === " " || key === "Spacebar" || code === "Space" || keyCode === 32)) {
@@ -218,11 +221,16 @@ export function actionFromKey(event: KeyLike, role: RemoteRole = "ui"): RemoteAc
   return null;
 }
 
-export function parseRemoteEvent(event: KeyboardEvent, role: RemoteRole = "ui"): RemoteAction | null {
+export function parseRemoteEvent(
+  event: KeyboardEvent,
+  role: RemoteRole = "ui",
+): RemoteAction | null {
   return actionFromKey(event, role);
 }
 
-export function isTvUserAgent(ua = typeof navigator === "undefined" ? "" : navigator.userAgent): boolean {
+export function isTvUserAgent(
+  ua = typeof navigator === "undefined" ? "" : navigator.userAgent,
+): boolean {
   return /AFT|AFTA|AFTN|AFTT|AFTM|AFTB|AFTS|AFTK|AFTKA|Silk\/|Android TV|SMART-TV|SmartTV|TV Safari|Web0S|Tizen|Bravia|CrKey|GoogleTV|HbbTV|PlayStation|Xbox|Viera|NetCast|AppleTV|Vidaa|Hisense|FireTV|FTV|BRAVIA|MiTV|Plex|Homatics|Nvidia Shield/i.test(
     ua,
   );
@@ -341,7 +349,15 @@ export function readGamepadAction(
 
   const pressed =
     edge ??
-    (buttons[12] ? "up" : buttons[13] ? "down" : buttons[14] ? "left" : buttons[15] ? "right" : axisAction(pad));
+    (buttons[12]
+      ? "up"
+      : buttons[13]
+        ? "down"
+        : buttons[14]
+          ? "left"
+          : buttons[15]
+            ? "right"
+            : axisAction(pad));
 
   let action: RemoteAction | null = null;
   let nextHold = hold;
@@ -371,7 +387,10 @@ export function resetRemoteDedupe() {
   lastAccepted = { action: "", at: 0 };
 }
 
-export function acceptRemoteAction(action: RemoteAction | null, repeat = false): RemoteAction | null {
+export function acceptRemoteAction(
+  action: RemoteAction | null,
+  repeat = false,
+): RemoteAction | null {
   if (!action) return null;
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
   const minGap = repeat ? 70 : 24;
@@ -444,20 +463,40 @@ export function findNextInDirection(
   return best;
 }
 
+/**
+ * Every element the d-pad may land on when a screen has no handler of its own.
+ * Plain buttons and links count: the favourites tabs and the settings actions
+ * are ordinary buttons, and leaving them out sent every left/right press up to
+ * the header nav instead.
+ */
+const FOCUSABLE_SELECTOR = [
+  "[data-tv-node]",
+  "[data-tv-index]",
+  "[data-tv-zone]",
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(", ");
+
 export function spatialNavigate(dir: Dir): boolean {
   if (typeof document === "undefined") return false;
-  const nodes = [
-    ...document.querySelectorAll<HTMLElement>(
-      "[data-tv-node], [data-tv-zone='search'], [data-tv-zone='sort'], [data-tv-zone='cats'], [data-tv-index], header nav a",
-    ),
-  ].filter((el) => {
+  const nodes = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((el) => {
     if (el.closest("[data-kb-root]")) return false;
+    if (el.getAttribute("aria-hidden") === "true") return false;
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    // Off-screen rows of a virtualised list are not somewhere to jump to.
+    return rect.bottom > -200 && rect.top < window.innerHeight + 200;
   });
   if (!nodes.length) return false;
   const active = document.activeElement as HTMLElement | null;
-  const current = active && nodes.includes(active) ? active : nodes.find((el) => el.tabIndex === 0) ?? nodes[0]!;
+  const current =
+    active && nodes.includes(active)
+      ? active
+      : (nodes.find((el) => el.tabIndex === 0) ?? nodes[0]!);
   const origin = current.getBoundingClientRect();
   const next = findNextInDirection(
     origin,

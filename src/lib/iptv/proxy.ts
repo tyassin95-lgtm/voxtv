@@ -47,9 +47,22 @@ export interface StreamProbe {
   finalUrl?: string;
 }
 
-export async function probeStream(url: string): Promise<StreamProbe> {
+/**
+ * Asks the proxy to drop pooled upstream sockets. IPTV accounts are commonly
+ * capped at one or two connections, so a lingering socket from the title you
+ * just closed is what makes the next one take forever to start.
+ */
+export function releaseStreams(): void {
   try {
-    const res = await fetch(`${proxiedStreamUrl(url)}&probe=1`);
+    void fetch("/api/iptv/stream?release=1", { keepalive: true }).catch(() => undefined);
+  } catch {
+    /* best effort */
+  }
+}
+
+export async function probeStream(url: string, signal?: AbortSignal): Promise<StreamProbe> {
+  try {
+    const res = await fetch(`${proxiedStreamUrl(url)}&probe=1`, { signal });
     if (!res.ok) {
       return { ok: false, status: res.status, kind: "unknown" };
     }

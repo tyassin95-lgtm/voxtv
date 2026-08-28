@@ -45,6 +45,11 @@ object IptvProxy {
 
   class ProxyException(message: String) : Exception(message)
 
+  /** Drops idle upstream sockets so a capped account is not held hostage. */
+  fun releasePooledConnections() {
+    runCatching { client.connectionPool.evictAll() }
+  }
+
   fun decodeTargetUrl(raw: String?): String {
     if (raw.isNullOrBlank()) throw ProxyException("Missing url")
     var url = raw

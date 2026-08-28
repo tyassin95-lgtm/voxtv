@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { playbackCandidates, videoBoxFor } from "./playback.ts";
+import { confidentEngine, loadVolume, playbackCandidates, videoBoxFor } from "./playback.ts";
 import { clampAudioDelay, formatAudioDelay } from "./audio-sync.ts";
 import { credentialPathPairs, looksHls, pickEngine, streamUrlVariants } from "./playback-urls.ts";
 import { engineForKind } from "./stream-detect.ts";
@@ -41,16 +41,36 @@ describe("url variants", () => {
 
 describe("aspect modes", () => {
   it("fills the stage for the fit modes", () => {
-    assert.deepEqual(videoBoxFor("contain", 1920, 1080), { width: 1920, height: 1080, objectFit: "contain" });
-    assert.deepEqual(videoBoxFor("cover", 1920, 1080), { width: 1920, height: 1080, objectFit: "cover" });
-    assert.deepEqual(videoBoxFor("fill", 1280, 720), { width: 1280, height: 720, objectFit: "fill" });
+    assert.deepEqual(videoBoxFor("contain", 1920, 1080), {
+      width: 1920,
+      height: 1080,
+      objectFit: "contain",
+    });
+    assert.deepEqual(videoBoxFor("cover", 1920, 1080), {
+      width: 1920,
+      height: 1080,
+      objectFit: "cover",
+    });
+    assert.deepEqual(videoBoxFor("fill", 1280, 720), {
+      width: 1280,
+      height: 720,
+      objectFit: "fill",
+    });
   });
 
   it("letterboxes forced ratios instead of relying on css aspect-ratio", () => {
     // Wide stage: height wins, width is trimmed to the ratio.
-    assert.deepEqual(videoBoxFor("4:3", 1920, 1080), { width: 1440, height: 1080, objectFit: "fill" });
+    assert.deepEqual(videoBoxFor("4:3", 1920, 1080), {
+      width: 1440,
+      height: 1080,
+      objectFit: "fill",
+    });
     // Tall stage: width wins.
-    assert.deepEqual(videoBoxFor("16:9", 1000, 1000), { width: 1000, height: 563, objectFit: "fill" });
+    assert.deepEqual(videoBoxFor("16:9", 1000, 1000), {
+      width: 1000,
+      height: 563,
+      objectFit: "fill",
+    });
   });
 
   it("survives being measured before layout", () => {
@@ -65,5 +85,42 @@ describe("audio sync offsets", () => {
     assert.equal(clampAudioDelay(99999), 3000);
     assert.equal(formatAudioDelay(0), "0 ms");
     assert.equal(formatAudioDelay(250), "+250 ms");
+  });
+});
+
+describe("engine shortcuts", () => {
+  it("recognises the formats a url names outright", () => {
+    assert.equal(confidentEngine("http://host/live/1.m3u8"), "hls");
+    assert.equal(confidentEngine("http://host/live/1.ts?token=x"), "mpegts");
+    assert.equal(confidentEngine("http://host/movie/9.mp4"), "native");
+    assert.equal(confidentEngine("http://host/movie/9.mkv"), "native");
+  });
+
+  it("leaves anything ambiguous to the probe", () => {
+    assert.equal(confidentEngine("http://host/live/u/p/12"), null);
+    assert.equal(confidentEngine("http://host/stream?id=12"), null);
+  });
+});
+
+describe("saved volume", () => {
+  it("starts at full volume when nothing was ever saved", () => {
+    const store = new Map<string, string>();
+    const stub = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+    };
+    const globals = globalThis as { localStorage?: unknown };
+    const original = globals.localStorage;
+    globals.localStorage = stub;
+    try {
+      // `Number(null)` is 0, which used to mute every stream on a fresh install.
+      assert.equal(loadVolume(), 1);
+      store.set("vox-iptv-volume", "0.4");
+      assert.equal(loadVolume(), 0.4);
+      store.set("vox-iptv-volume", "");
+      assert.equal(loadVolume(), 1);
+    } finally {
+      globals.localStorage = original;
+    }
   });
 });

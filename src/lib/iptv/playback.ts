@@ -1,21 +1,10 @@
 import { proxiedStreamUrl } from "./proxy.ts";
 import type { PlayableKind } from "./types.ts";
-import {
-  looksHls,
-  pickEngine,
-  streamUrlVariants,
-  type Engine,
-} from "./playback-urls.ts";
+import { looksHls, pickEngine, streamUrlVariants, type Engine } from "./playback-urls.ts";
 
 export type AspectMode = "contain" | "cover" | "fill" | "16:9" | "4:3";
 export type { Engine };
-export {
-  looksHls,
-  looksNative,
-  looksTs,
-  pickEngine,
-  streamUrlVariants,
-} from "./playback-urls.ts";
+export { looksHls, looksNative, looksTs, pickEngine, streamUrlVariants } from "./playback-urls.ts";
 
 export interface PlaybackCandidate {
   url: string;
@@ -31,7 +20,11 @@ export const ASPECT_MODES: { id: AspectMode; label: string }[] = [
   { id: "4:3", label: "4:3" },
 ];
 
-export function playbackCandidates(url: string, kind: PlayableKind = "live", extras: string[] = []): PlaybackCandidate[] {
+export function playbackCandidates(
+  url: string,
+  kind: PlayableKind = "live",
+  extras: string[] = [],
+): PlaybackCandidate[] {
   const raws = [...extras, url].filter(Boolean);
   const variants: string[] = [];
   for (const raw of raws) {
@@ -65,6 +58,19 @@ export function playbackCandidates(url: string, kind: PlayableKind = "live", ext
   }
 
   return candidates;
+}
+
+/**
+ * The engine a URL announces by itself. Probing costs an extra connection to
+ * the provider before playback can start — and providers commonly cap
+ * concurrent connections — so a decisive extension skips it.
+ */
+export function confidentEngine(url: string): Engine | null {
+  const clean = url.split("#")[0] ?? url;
+  if (/\.m3u8(\?|$)/i.test(clean)) return "hls";
+  if (/\.ts(\?|$)/i.test(clean)) return "mpegts";
+  if (/\.(mp4|m4v|mkv|mov|webm)(\?|$)/i.test(clean)) return "native";
+  return null;
 }
 
 export function objectFitFor(mode: AspectMode): "contain" | "cover" | "fill" {
@@ -123,7 +129,10 @@ export function saveAspect(mode: AspectMode) {
 
 export function loadVolume(): number {
   if (typeof localStorage === "undefined") return 1;
-  const v = Number(localStorage.getItem(VOLUME_LS));
+  const raw = localStorage.getItem(VOLUME_LS);
+  // `Number(null)` is 0, which used to start every stream silent.
+  if (raw === null || raw === "") return 1;
+  const v = Number(raw);
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
