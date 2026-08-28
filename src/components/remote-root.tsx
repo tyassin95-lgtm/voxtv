@@ -105,7 +105,9 @@ export function RemoteRoot({ children }: { children: React.ReactNode }) {
     const isEditable = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
       const tag = el?.tagName;
-      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || Boolean(el?.isContentEditable);
+      return (
+        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || Boolean(el?.isContentEditable)
+      );
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -122,7 +124,13 @@ export function RemoteRoot({ children }: { children: React.ReactNode }) {
       }
       if (isEditable(event.target) && !isMediaAction(action)) return;
       dispatchRemote(
-        { action, repeat: event.repeat, source: "key", key: event.key, keyCode: event.keyCode || event.which },
+        {
+          action,
+          repeat: event.repeat,
+          source: "key",
+          key: event.key,
+          keyCode: event.keyCode || event.which,
+        },
         event,
       );
     };
@@ -140,15 +148,27 @@ export function RemoteRoot({ children }: { children: React.ReactNode }) {
         return;
       }
       dispatchRemote(
-        { action, repeat: false, source: "key", key: event.key, keyCode: event.keyCode || event.which },
+        {
+          action,
+          repeat: false,
+          source: "key",
+          key: event.key,
+          keyCode: event.keyCode || event.which,
+        },
         event,
       );
     };
+
+    // The Fire TV shell asks the app to handle its hardware Back button first
+    // and only leaves the app when nothing here consumed the press.
+    const voxWindow = window as Window & { __voxBack?: () => boolean };
+    voxWindow.__voxBack = () => dispatchBack();
 
     window.addEventListener("popstate", onPop);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     return () => {
+      delete voxWindow.__voxBack;
       window.removeEventListener("popstate", onPop);
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
@@ -159,7 +179,8 @@ export function RemoteRoot({ children }: { children: React.ReactNode }) {
     let raf = 0;
     const poll = () => {
       raf = requestAnimationFrame(poll);
-      const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
+      const pads =
+        typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
       const now = performance.now();
       for (let i = 0; i < pads.length; i++) {
         const pad = pads[i];

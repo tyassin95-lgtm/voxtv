@@ -1,0 +1,86 @@
+name: Build Fire TV APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - claude/iptv-app-fixes-ppefuv
+    paths:
+      - "src/**"
+      - "android/**"
+      - "scripts/build-web-assets.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - ".github/workflows/firetv-apk.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firetv-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the web bundle for the app
+        run: node scripts/build-web-assets.mjs
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # Keeps the same signing key between runs so the app updates in place
+      # instead of demanding an uninstall first.
+      - name: Restore signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: voxtv-android-debug-keystore-v1
+
+      - name: Test the native layer
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/voxtv-firetv.apk
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voxtv-firetv-apk
+          path: dist/voxtv-firetv.apk
+          if-no-files-found: error
+
+      # A release asset has a stable URL, which is what the Fire TV Downloader
+      # app needs — it cannot open a zipped workflow artifact.
+      - name: Publish to the firetv-latest release
+        if: github.event_name == 'workflow_dispatch' || github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete firetv-latest --yes --cleanup-tag || true
+          gh release create firetv-latest dist/voxtv-firetv.apk \
+            --title "Vox IPTV for Fire TV (latest)" \
+            --notes "Built from ${{ github.sha }} on $(date -u +%Y-%m-%d). Install URL: https://github.com/${{ github.repository }}/releases/download/firetv-latest/voxtv-firetv.apk" \
+            --prerelease

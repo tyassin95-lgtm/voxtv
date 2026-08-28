@@ -159,6 +159,11 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  // The Fire TV APK build (scripts/build-web-assets.mjs) lowers the browser
+  // target for older Fire OS web views; the hosted build is untouched.
+  ...(process.env.VOX_BUILD_TARGET
+    ? { build: { target: process.env.VOX_BUILD_TARGET.split(",") } }
+    : {}),
   plugins: [
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.

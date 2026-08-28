@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vox IPTV</string>
+    <string name="press_back_again">Press back again to exit</string>
+    <string name="server_failed">Vox IPTV could not start. Close the app and open it again.</string>
+</resources>
