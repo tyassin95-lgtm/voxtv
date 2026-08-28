@@ -74,6 +74,9 @@ export function CategoryBrowser({
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [zone, setZone] = useState<Zone>("grid");
+  // The grid highlight only appears once a remote/d-pad is actually in use —
+  // on mouse/touch the first tile must not look pre-selected.
+  const [tvActive, setTvActive] = useState(false);
   const [gridIndex, setGridIndex] = useState(0);
   const [sortCursor, setSortCursor] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -194,12 +197,12 @@ export function CategoryBrowser({
   }
 
   useEffect(() => {
-    if (zone !== "grid" || !items.length) return;
+    if (!tvActive || zone !== "grid" || !items.length) return;
     const row = isLive ? gridIndex : Math.floor(gridIndex / Math.max(columns, 1));
     virtualizer.scrollToIndex(row, { align: "center" });
     const timer = window.setTimeout(() => focusTvIndex(gridIndex), 16);
     return () => window.clearTimeout(timer);
-  }, [zone, gridIndex, columns, isLive, items.length, virtualizer]);
+  }, [tvActive, zone, gridIndex, columns, isLive, items.length, virtualizer]);
 
   useBackHandler(() => {
     if (keyboardOpen) {
@@ -278,6 +281,7 @@ export function CategoryBrowser({
         return false;
       }
       enableTvMode();
+      setTvActive(true);
 
       const active = document.activeElement as HTMLElement | null;
       let currentZone = state.zone;
@@ -583,7 +587,7 @@ export function CategoryBrowser({
                         channel={ch}
                         epgTitle={epgMap.get(ch.id)?.now?.title}
                         tvIndex={row.index}
-                        tvFocused={zone === "grid" && gridIndex === row.index}
+                        tvFocused={tvActive && zone === "grid" && gridIndex === row.index}
                       />
                     </div>
                   );
@@ -610,7 +614,7 @@ export function CategoryBrowser({
                           image={"poster" in item ? item.poster : ""}
                           subtitle={"year" in item ? item.year : undefined}
                           tvIndex={index}
-                          tvFocused={zone === "grid" && gridIndex === index}
+                          tvFocused={tvActive && zone === "grid" && gridIndex === index}
                         />
                       );
                     })}

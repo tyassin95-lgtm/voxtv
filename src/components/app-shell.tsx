@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Clapperboard, Film, Home, Radio } from "lucide-react";
+import { Clapperboard, Film, Home, Radio, Settings } from "lucide-react";
 import { VoxWordmark } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
@@ -8,6 +8,7 @@ const NAV = [
   { to: "/live", label: "Live TV", icon: Radio },
   { to: "/shows", label: "TV Shows", icon: Clapperboard },
   { to: "/movies", label: "Movies", icon: Film },
+  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 export function AppShell({
@@ -59,7 +60,7 @@ export function AppShell({
         {children}
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
         {NAV.map((item) => {
           const active = item.to === "/" ? pathname === "/" : pathname.startsWith(item.to);
           return (

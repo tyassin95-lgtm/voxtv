@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as MoviesRouteImport } from './routes/movies'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ShowsRouteImport } from './routes/shows'
 import { Route as WatchRouteImport } from './routes/watch'
 import { Route as ShowsIndexRouteImport } from './routes/shows.index'
@@ -19,6 +20,7 @@ import { Route as ShowsShowIdRouteImport } from './routes/shows.$showId'
 import { Route as ApiIptvFetchRouteImport } from './routes/api/iptv/fetch'
 import { Route as ApiIptvImageRouteImport } from './routes/api/iptv/image'
 import { Route as ApiIptvStreamRouteImport } from './routes/api/iptv/stream'
+import { Route as ApiIptvSubtitlesRouteImport } from './routes/api/iptv/subtitles'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -33,6 +35,11 @@ const LiveRoute = LiveRouteImport.update({
 const MoviesRoute = MoviesRouteImport.update({
   id: '/movies',
   path: '/movies',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ShowsRoute = ShowsRouteImport.update({
@@ -70,11 +77,17 @@ const ApiIptvStreamRoute = ApiIptvStreamRouteImport.update({
   path: '/api/iptv/stream',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiIptvSubtitlesRoute = ApiIptvSubtitlesRouteImport.update({
+  id: '/api/iptv/subtitles',
+  path: '/api/iptv/subtitles',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
   '/movies': typeof MoviesRoute
+  '/settings': typeof SettingsRoute
   '/shows': typeof ShowsRouteWithChildren
   '/watch': typeof WatchRoute
   '/shows/$showId': typeof ShowsShowIdRoute
@@ -82,23 +95,27 @@ export interface FileRoutesByFullPath {
   '/api/iptv/fetch': typeof ApiIptvFetchRoute
   '/api/iptv/image': typeof ApiIptvImageRoute
   '/api/iptv/stream': typeof ApiIptvStreamRoute
+  '/api/iptv/subtitles': typeof ApiIptvSubtitlesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
   '/movies': typeof MoviesRoute
+  '/settings': typeof SettingsRoute
   '/watch': typeof WatchRoute
   '/shows/$showId': typeof ShowsShowIdRoute
   '/shows': typeof ShowsIndexRoute
   '/api/iptv/fetch': typeof ApiIptvFetchRoute
   '/api/iptv/image': typeof ApiIptvImageRoute
   '/api/iptv/stream': typeof ApiIptvStreamRoute
+  '/api/iptv/subtitles': typeof ApiIptvSubtitlesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
   '/movies': typeof MoviesRoute
+  '/settings': typeof SettingsRoute
   '/shows': typeof ShowsRouteWithChildren
   '/watch': typeof WatchRoute
   '/shows/$showId': typeof ShowsShowIdRoute
@@ -106,6 +123,7 @@ export interface FileRoutesById {
   '/api/iptv/fetch': typeof ApiIptvFetchRoute
   '/api/iptv/image': typeof ApiIptvImageRoute
   '/api/iptv/stream': typeof ApiIptvStreamRoute
+  '/api/iptv/subtitles': typeof ApiIptvSubtitlesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -113,6 +131,7 @@ export interface FileRouteTypes {
     | '/'
     | '/live'
     | '/movies'
+    | '/settings'
     | '/shows'
     | '/watch'
     | '/shows/$showId'
@@ -120,22 +139,26 @@ export interface FileRouteTypes {
     | '/api/iptv/fetch'
     | '/api/iptv/image'
     | '/api/iptv/stream'
+    | '/api/iptv/subtitles'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/live'
     | '/movies'
+    | '/settings'
     | '/watch'
     | '/shows/$showId'
     | '/shows'
     | '/api/iptv/fetch'
     | '/api/iptv/image'
     | '/api/iptv/stream'
+    | '/api/iptv/subtitles'
   id:
     | '__root__'
     | '/'
     | '/live'
     | '/movies'
+    | '/settings'
     | '/shows'
     | '/watch'
     | '/shows/$showId'
@@ -143,17 +166,20 @@ export interface FileRouteTypes {
     | '/api/iptv/fetch'
     | '/api/iptv/image'
     | '/api/iptv/stream'
+    | '/api/iptv/subtitles'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LiveRoute: typeof LiveRoute
   MoviesRoute: typeof MoviesRoute
+  SettingsRoute: typeof SettingsRoute
   ShowsRoute: typeof ShowsRouteWithChildren
   WatchRoute: typeof WatchRoute
   ApiIptvFetchRoute: typeof ApiIptvFetchRoute
   ApiIptvImageRoute: typeof ApiIptvImageRoute
   ApiIptvStreamRoute: typeof ApiIptvStreamRoute
+  ApiIptvSubtitlesRoute: typeof ApiIptvSubtitlesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -177,6 +203,13 @@ declare module '@tanstack/react-router' {
       path: '/movies'
       fullPath: '/movies'
       preLoaderRoute: typeof MoviesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/shows': {
@@ -228,6 +261,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIptvStreamRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/iptv/subtitles': {
+      id: '/api/iptv/subtitles'
+      path: '/api/iptv/subtitles'
+      fullPath: '/api/iptv/subtitles'
+      preLoaderRoute: typeof ApiIptvSubtitlesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -247,11 +287,13 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LiveRoute: LiveRoute,
   MoviesRoute: MoviesRoute,
+  SettingsRoute: SettingsRoute,
   ShowsRoute: ShowsRouteWithChildren,
   WatchRoute: WatchRoute,
   ApiIptvFetchRoute: ApiIptvFetchRoute,
   ApiIptvImageRoute: ApiIptvImageRoute,
   ApiIptvStreamRoute: ApiIptvStreamRoute,
+  ApiIptvSubtitlesRoute: ApiIptvSubtitlesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

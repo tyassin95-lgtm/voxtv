@@ -125,6 +125,27 @@ export function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
+/** Drops the cached handle so the next call reopens (or recreates) the DB. */
+export async function closeDb(): Promise<void> {
+  const pending = dbPromise;
+  dbPromise = null;
+  if (!pending) return;
+  const db = await pending.catch(() => null);
+  db?.close();
+}
+
+/** Removes the whole IndexedDB database — used by the settings reset. */
+export async function deleteDatabase(): Promise<void> {
+  await closeDb();
+  if (typeof indexedDB === "undefined") return;
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
+  });
+}
+
 function tx(db: IDBDatabase, stores: StoreName | StoreName[], mode: IDBTransactionMode) {
   return db.transaction(stores, mode);
 }

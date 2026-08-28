@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  AudioLines,
   Heart,
   Maximize,
   Minimize,
@@ -17,17 +18,30 @@ import { Button } from "@/components/ui/button";
 import { useBackHandler, useRemoteHandler } from "@/components/remote-root";
 import {
   ASPECT_MODES,
-  aspectRatioFor,
   loadAspect,
   loadVolume,
-  objectFitFor,
   playbackCandidates,
   saveAspect,
   saveVolume,
+  videoBoxFor,
   type AspectMode,
   type Engine,
   type PlaybackCandidate,
 } from "@/lib/iptv/playback";
+import {
+  AUDIO_DELAY_COARSE_MS,
+  AUDIO_DELAY_STEP_MS,
+  applyAudioDelay,
+  clampAudioDelay,
+  formatAudioDelay,
+  resumeAudioGraph,
+} from "@/lib/iptv/audio-sync";
+import {
+  SubtitleMenu,
+  type LoadedSubtitle,
+  type SubtitleOption,
+} from "@/components/player/subtitle-menu";
+import { releaseSubtitleUrls, subtitleQueryFor } from "@/lib/iptv/subtitles";
 import { getById, saveProgress } from "@/lib/iptv/db";
 import { useIsFavorite } from "@/lib/iptv/store";
 import type { ContentKind, Playable, WatchProgress } from "@/lib/iptv/types";
@@ -50,6 +64,14 @@ interface TsPlayer {
   on: (event: string, cb: (...args: unknown[]) => void) => void;
 }
 
+/** Subset of hls.js we drive directly for subtitle rendition switching. */
+interface HlsHandle {
+  destroy: () => void;
+  subtitleTracks?: { id: number; name?: string; lang?: string }[];
+  subtitleTrack?: number;
+  subtitleDisplay?: boolean;
+}
+
 interface MpegtsLib {
   isSupported: () => boolean;
   createPlayer: (media: Record<string, unknown>, config: Record<string, unknown>) => TsPlayer;
@@ -67,7 +89,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
   const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const hlsRef = useRef<{ destroy: () => void } | null>(null);
+  const hlsRef = useRef<HlsHandle | null>(null);
   const tsRef = useRef<TsPlayer | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const hideTimer = useRef<number | null>(null);
@@ -92,17 +114,31 @@ export function VideoPlayer({ item }: { item: Playable }) {
   const [aspect, setAspect] = useState<AspectMode>(loadAspect);
   const [chrome, setChrome] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
-  const [textTracks, setTextTracks] = useState<TextTrack[]>([]);
-  const [subsOn, setSubsOn] = useState(true);
-  const [subIndex, setSubIndex] = useState(0);
+  const [subOptions, setSubOptions] = useState<SubtitleOption[]>([]);
+  const [activeSub, setActiveSub] = useState<string | null>(null);
+  const [externalSubs, setExternalSubs] = useState<LoadedSubtitle[]>([]);
   const [subMenu, setSubMenu] = useState(false);
+  const [audioDelay, setAudioDelay] = useState(0);
+  const [audioSyncOpen, setAudioSyncOpen] = useState(false);
+  const [audioSyncError, setAudioSyncError] = useState(false);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const trackMapRef = useRef(new Map<string, TextTrack>());
+  const activeSubRef = useRef<string | null>(null);
+  const pendingSubRef = useRef<string | null>(null);
+  const subMenuRef = useRef(false);
+  const audioSyncRef = useRef(false);
+  const audioDelayRef = useRef(0);
+  subMenuRef.current = subMenu;
+  audioSyncRef.current = audioSyncOpen;
+  audioDelayRef.current = audioDelay;
   const [seekFlash, setSeekFlash] = useState<string | null>(null);
   const [playerCtrl, setPlayerCtrl] = useState("play");
   const chromeRef = useRef(true);
   const seekHoldRef = useRef(0);
   const flashTimer = useRef<number | null>(null);
   chromeRef.current = chrome;
-  const favKind: ContentKind = item.kind === "live" ? "live" : item.kind === "movie" ? "movie" : "show";
+  const favKind: ContentKind =
+    item.kind === "live" ? "live" : item.kind === "movie" ? "movie" : "show";
   const favId = item.kind === "episode" ? item.showId || item.id : item.id;
   const [favorited, toggleFav] = useIsFavorite(favKind, favId);
 
@@ -141,6 +177,73 @@ export function VideoPlayer({ item }: { item: Playable }) {
     scheduleHide();
   }, [scheduleHide]);
 
+  /**
+   * HLS renditions only start downloading once hls.js is told which subtitle
+   * track to fetch, so a native `mode = "showing"` alone renders nothing.
+   */
+  const syncHlsSubtitle = useCallback((track: TextTrack | null, external: boolean) => {
+    const hls = hlsRef.current;
+    if (!hls || !Array.isArray(hls.subtitleTracks) || !hls.subtitleTracks.length) return;
+    if (!track || external) {
+      hls.subtitleTrack = -1;
+      return;
+    }
+    const index = hls.subtitleTracks.findIndex(
+      (candidate) =>
+        (candidate.name && candidate.name === track.label) ||
+        (candidate.lang &&
+          track.language &&
+          candidate.lang.toLowerCase() === track.language.toLowerCase()),
+    );
+    hls.subtitleDisplay = true;
+    hls.subtitleTrack = index >= 0 ? index : 0;
+  }, []);
+
+  /** Rebuilds the menu from whatever tracks the element currently exposes. */
+  const refreshTracks = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const elements = new Map<TextTrack, HTMLTrackElement>();
+    video.querySelectorAll("track").forEach((el) => {
+      if (el.track) elements.set(el.track, el);
+    });
+    const map = new Map<string, TextTrack>();
+    const options: SubtitleOption[] = [];
+    let embedded = 0;
+    for (const track of Array.from(video.textTracks)) {
+      if (track.kind && track.kind !== "subtitles" && track.kind !== "captions") continue;
+      const element = elements.get(track);
+      const id = element?.dataset.subId ?? `embedded:${embedded}`;
+      if (!element) embedded += 1;
+      map.set(id, track);
+      options.push({
+        id,
+        label:
+          element?.label ||
+          track.label ||
+          track.language?.toUpperCase() ||
+          `Track ${options.length + 1}`,
+        sublabel: element ? "OpenSubtitles" : "In stream",
+      });
+    }
+    trackMapRef.current = map;
+    setSubOptions(options);
+  }, []);
+
+  const applySub = useCallback(
+    (id: string | null) => {
+      const video = videoRef.current;
+      activeSubRef.current = id;
+      setActiveSub(id);
+      const target = id ? (trackMapRef.current.get(id) ?? null) : null;
+      for (const track of Array.from(video?.textTracks ?? [])) {
+        track.mode = track === target ? "showing" : "disabled";
+      }
+      syncHlsSubtitle(target, Boolean(id && !id.startsWith("embedded:")));
+    },
+    [syncHlsSubtitle],
+  );
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -169,7 +272,10 @@ export function VideoPlayer({ item }: { item: Playable }) {
       const url = candidate.url;
       iptvLog("player", "start", engine, redactUrl(candidate.source));
       if (engine === "hls") {
-        if (video.canPlayType("application/vnd.apple.mpegurl") && !url.includes("/api/iptv/stream")) {
+        if (
+          video.canPlayType("application/vnd.apple.mpegurl") &&
+          !url.includes("/api/iptv/stream")
+        ) {
           video.src = url;
         } else {
           const { default: Hls } = await import("hls.js");
@@ -204,7 +310,13 @@ export function VideoPlayer({ item }: { item: Playable }) {
               video.play().catch(() => undefined);
             });
             hls.on(Hls.Events.ERROR, (_e, data) => {
-              if (!data.fatal || !isCurrent() || tearingDownRef.current || attachGen !== attachGenRef.current) return;
+              if (
+                !data.fatal ||
+                !isCurrent() ||
+                tearingDownRef.current ||
+                attachGen !== attachGenRef.current
+              )
+                return;
               const detail = String(data.details || data.type || "hls error");
               iptvWarn("player", "hls fatal", detail);
               failCurrentRef.current(`HLS ${detail}`);
@@ -241,7 +353,8 @@ export function VideoPlayer({ item }: { item: Playable }) {
           player.load();
           void player.play();
           player.on(mpeg.Events.ERROR, (...args: unknown[]) => {
-            if (!isCurrent() || tearingDownRef.current || attachGen !== attachGenRef.current) return;
+            if (!isCurrent() || tearingDownRef.current || attachGen !== attachGenRef.current)
+              return;
             iptvWarn("player", "mpegts error", ...args);
             failCurrentRef.current("MPEG-TS stream error");
           });
@@ -267,7 +380,10 @@ export function VideoPlayer({ item }: { item: Playable }) {
         if (item.isLive && playingRef.current && dropoutRef.current < LIVE_DROPOUT_RETRIES) {
           dropoutRef.current += 1;
           const delay = Math.min(6000, 1200 * 2 ** (dropoutRef.current - 1));
-          iptvWarn("player", `live dropout retry ${dropoutRef.current}/${LIVE_DROPOUT_RETRIES} in ${delay}ms`);
+          iptvWarn(
+            "player",
+            `live dropout retry ${dropoutRef.current}/${LIVE_DROPOUT_RETRIES} in ${delay}ms`,
+          );
           setReconnecting(true);
           setError("Connection lost. Reconnecting…");
           attemptRef.current = 0;
@@ -281,7 +397,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
         tearingDownRef.current = false;
         setReconnecting(false);
         setBuffering(false);
-        setError("This stream could not be played. The provider may be offline or the format is not supported in this browser.");
+        setError(
+          "This stream could not be played. The provider may be offline or the format is not supported in this browser.",
+        );
         iptvWarn("player", "gave up after", candidates.length, "candidates");
         return;
       }
@@ -363,6 +481,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
       if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) setBuffering(true);
     };
     const onPlay = () => {
+      resumeAudioGraph(video);
       playingRef.current = true;
       setBuffering(false);
       setPaused(false);
@@ -378,11 +497,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
       failCurrentRef.current(reason);
     };
     const onTracks = () => {
-      const tracks = Array.from(video.textTracks);
-      setTextTracks(tracks);
-      tracks.forEach((t, i) => {
-        t.mode = subsOn && i === subIndex ? "showing" : "hidden";
-      });
+      refreshTracks();
+      // A re-attached engine recreates its tracks, so re-arm the chosen one.
+      applySub(activeSubRef.current);
     };
 
     video.addEventListener("timeupdate", onTime);
@@ -392,7 +509,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
     video.addEventListener("pause", onPause);
     video.addEventListener("error", onErr);
     video.addEventListener("loadedmetadata", onTime);
+    video.addEventListener("loadedmetadata", onTracks);
     video.textTracks.addEventListener("addtrack", onTracks);
+    video.textTracks.addEventListener("removetrack", onTracks);
     return () => {
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("waiting", onWait);
@@ -401,9 +520,11 @@ export function VideoPlayer({ item }: { item: Playable }) {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("error", onErr);
       video.removeEventListener("loadedmetadata", onTime);
+      video.removeEventListener("loadedmetadata", onTracks);
       video.textTracks.removeEventListener("addtrack", onTracks);
+      video.textTracks.removeEventListener("removetrack", onTracks);
     };
-  }, [item.isLive, subIndex, subsOn]);
+  }, [item.isLive, refreshTracks, applySub]);
 
   useEffect(() => {
     if (item.isLive) return;
@@ -427,6 +548,52 @@ export function VideoPlayer({ item }: { item: Playable }) {
     return () => window.clearInterval(id);
   }, [item]);
 
+  // The forced aspect ratios need the real stage size, not a CSS ratio: the
+  // element already has a definite width and height, which wins over one.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => setStageSize({ width: el.clientWidth, height: el.clientHeight });
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(el);
+    window.addEventListener("resize", measure);
+    document.addEventListener("fullscreenchange", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      document.removeEventListener("fullscreenchange", measure);
+    };
+  }, []);
+
+  // A downloaded subtitle becomes a <track> child; select it once it mounts.
+  useEffect(() => {
+    if (!externalSubs.length) return;
+    refreshTracks();
+    const pending = pendingSubRef.current;
+    if (!pending) return;
+    pendingSubRef.current = null;
+    applySub(pending);
+  }, [externalSubs, refreshTracks, applySub]);
+
+  // Downloaded subtitles are object URLs; drop them when the player goes away.
+  useEffect(() => releaseSubtitleUrls, []);
+
+  // Sync offsets belong to one stream, never to the next thing you open.
+  useEffect(() => {
+    setAudioDelay(0);
+    setAudioSyncError(false);
+    applyAudioDelay(videoRef.current, 0);
+  }, [item.id]);
+
+  function changeAudioDelay(next: number) {
+    const value = clampAudioDelay(next);
+    const ok = applyAudioDelay(videoRef.current, value);
+    setAudioSyncError(!ok);
+    if (!ok) return;
+    setAudioDelay(value);
+    bumpChrome();
+  }
 
   function togglePlay() {
     const video = videoRef.current;
@@ -462,14 +629,24 @@ export function VideoPlayer({ item }: { item: Playable }) {
     return true;
   }
 
-  const bottomCtrls = ["play", "rewind", "forward", "mute", "subs", "aspect", "full"];
+  const bottomCtrls = [
+    "play",
+    "rewind",
+    "forward",
+    "mute",
+    "subs",
+    ...(item.isLive ? [] : ["sync"]),
+    "aspect",
+    "full",
+  ];
   const topCtrls = ["back", "fav"];
   const playerCtrlRef = useRef(playerCtrl);
   playerCtrlRef.current = playerCtrl;
 
   useBackHandler(() => {
-    if (subMenu) {
-      setSubMenu(false);
+    if (subMenu) return false;
+    if (audioSyncOpen) {
+      setAudioSyncOpen(false);
       return true;
     }
     if (chromeRef.current) {
@@ -478,7 +655,7 @@ export function VideoPlayer({ item }: { item: Playable }) {
     }
     leavePlayer();
     return true;
-  }, [subMenu, item.kind, item.showId]);
+  }, [subMenu, audioSyncOpen, item.kind, item.showId]);
 
   useRemoteHandler(
     (event) => {
@@ -486,7 +663,28 @@ export function VideoPlayer({ item }: { item: Playable }) {
       const video = videoRef.current;
       if (!video) return false;
       if (action === "back") return false;
+      // The subtitle sheet registers its own handler; stay out of its way.
+      if (subMenuRef.current) return false;
       enableTvMode();
+
+      // While the sync popover is open the d-pad tunes the offset; media keys
+      // still fall through to normal playback control.
+      if (audioSyncRef.current) {
+        if (action === "left") changeAudioDelay(audioDelayRef.current - AUDIO_DELAY_STEP_MS);
+        else if (action === "right") changeAudioDelay(audioDelayRef.current + AUDIO_DELAY_STEP_MS);
+        else if (action === "up") changeAudioDelay(audioDelayRef.current + AUDIO_DELAY_COARSE_MS);
+        else if (action === "down") changeAudioDelay(audioDelayRef.current - AUDIO_DELAY_COARSE_MS);
+        else if (action === "select") setAudioSyncOpen(false);
+        if (
+          action === "left" ||
+          action === "right" ||
+          action === "up" ||
+          action === "down" ||
+          action === "select"
+        ) {
+          return true;
+        }
+      }
 
       const doSeek = (dir: number) => {
         if (event.repeat) seekHoldRef.current += 1;
@@ -556,7 +754,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
       }
       if (action === "select") {
         bumpChrome();
-        document.querySelector<HTMLElement>(`[data-player-ctrl="${playerCtrlRef.current}"]`)?.click();
+        document
+          .querySelector<HTMLElement>(`[data-player-ctrl="${playerCtrlRef.current}"]`)
+          ?.click();
         return true;
       }
       return false;
@@ -592,7 +792,8 @@ export function VideoPlayer({ item }: { item: Playable }) {
     if (!video) return false;
     const ranges = video.seekable;
     let min = 0;
-    let max = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : video.currentTime;
+    let max =
+      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : video.currentTime;
     if (ranges && ranges.length > 0) {
       min = ranges.start(0);
       max = ranges.end(ranges.length - 1);
@@ -640,21 +841,14 @@ export function VideoPlayer({ item }: { item: Playable }) {
 
   function cycleAspect() {
     const i = ASPECT_MODES.findIndex((m) => m.id === aspect);
-    const next = ASPECT_MODES[(i + 1) % ASPECT_MODES.length]?.id ?? "contain";
-    setAspect(next);
-    saveAspect(next);
+    const mode = ASPECT_MODES[(i + 1) % ASPECT_MODES.length] ?? ASPECT_MODES[0]!;
+    setAspect(mode.id);
+    saveAspect(mode.id);
+    flashSeek(mode.label);
   }
 
-  function applySubs(on: boolean, index = subIndex) {
-    setSubsOn(on);
-    setSubIndex(index);
-    textTracks.forEach((t, i) => {
-      t.mode = on && i === index ? "showing" : "disabled";
-    });
-  }
-
-  const fit = objectFitFor(aspect);
-  const ratio = aspectRatioFor(aspect);
+  const box = videoBoxFor(aspect, stageSize.width, stageSize.height);
+  const subtitleQuery = subtitleQueryFor(item);
 
   return (
     <div
@@ -665,14 +859,29 @@ export function VideoPlayer({ item }: { item: Playable }) {
     >
       <video
         ref={videoRef}
-        className="absolute inset-0 m-auto size-full bg-bg"
-        style={{ objectFit: fit, aspectRatio: ratio }}
+        className="absolute inset-0 m-auto bg-bg"
+        style={{
+          width: box.width || "100%",
+          height: box.height || "100%",
+          objectFit: box.objectFit,
+        }}
         playsInline
         autoPlay
         tabIndex={-1}
         preload="auto"
         onDoubleClick={toggleFullscreen}
-      />
+      >
+        {externalSubs.map((sub) => (
+          <track
+            key={sub.id}
+            data-sub-id={sub.id}
+            kind="subtitles"
+            label={sub.label}
+            srcLang={sub.lang === "ara" ? "ar" : "en"}
+            src={sub.url}
+          />
+        ))}
+      </video>
 
       {(buffering || reconnecting) && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -713,7 +922,13 @@ export function VideoPlayer({ item }: { item: Playable }) {
               LIVE
             </span>
           )}
-          <Button variant="ghost" size="icon" aria-label="Favorite" data-player-ctrl="fav" onClick={toggleFav}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Favorite"
+            data-player-ctrl="fav"
+            onClick={toggleFav}
+          >
             <Heart className={cn("size-5", favorited && "fill-accent text-accent")} />
           </Button>
         </div>
@@ -731,17 +946,45 @@ export function VideoPlayer({ item }: { item: Playable }) {
             />
           )}
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" aria-label={paused ? "Play" : "Pause"} data-player-ctrl="play" onClick={togglePlay}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={paused ? "Play" : "Pause"}
+              data-player-ctrl="play"
+              onClick={togglePlay}
+            >
               {paused ? (
                 <Play className="ml-0.5 size-5 fill-current" />
               ) : (
                 <Pause className="size-5 fill-current" />
               )}
             </Button>
-            <Button variant="ghost" size="icon" aria-label="Rewind" data-player-ctrl="rewind" onClick={() => { const ok = seekBy(-10); flashSeek(ok ? "-10s" : item.isLive ? (skipLive(-1) ? "Previous channel" : "Live") : "-10s"); }}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Rewind"
+              data-player-ctrl="rewind"
+              onClick={() => {
+                const ok = seekBy(-10);
+                flashSeek(
+                  ok ? "-10s" : item.isLive ? (skipLive(-1) ? "Previous channel" : "Live") : "-10s",
+                );
+              }}
+            >
               <Rewind className="size-5 fill-current" />
             </Button>
-            <Button variant="ghost" size="icon" aria-label="Fast forward" data-player-ctrl="forward" onClick={() => { const ok = seekBy(10); flashSeek(ok ? "+10s" : item.isLive ? (skipLive(1) ? "Next channel" : "Live") : "+10s"); }}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Fast forward"
+              data-player-ctrl="forward"
+              onClick={() => {
+                const ok = seekBy(10);
+                flashSeek(
+                  ok ? "+10s" : item.isLive ? (skipLive(1) ? "Next channel" : "Live") : "+10s",
+                );
+              }}
+            >
               <FastForward className="size-5 fill-current" />
             </Button>
             {!item.isLive && (
@@ -765,7 +1008,11 @@ export function VideoPlayer({ item }: { item: Playable }) {
                   setMuted(video.muted);
                 }}
               >
-                {muted || volume === 0 ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
+                {muted || volume === 0 ? (
+                  <VolumeX className="size-5" />
+                ) : (
+                  <Volume2 className="size-5" />
+                )}
               </Button>
               <input
                 type="range"
@@ -779,53 +1026,72 @@ export function VideoPlayer({ item }: { item: Playable }) {
               />
             </div>
             <div className="ml-auto flex items-center gap-1">
-              <div className="relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Subtitles"
-                  data-player-ctrl="subs"
-                  onClick={() => {
-                    if (textTracks.length === 0) {
-                      applySubs(!subsOn);
-                      return;
-                    }
-                    setSubMenu((v) => !v);
-                  }}
-                >
-                  <Subtitles className={cn("size-5", subsOn && textTracks.length > 0 && "text-accent")} />
-                </Button>
-                {subMenu && (
-                  <div className="absolute right-0 bottom-12 w-48 rounded-md bg-elevated p-1 shadow-[var(--shadow-border)]">
-                    <button
-                      type="button"
-                      className="flex h-9 w-full items-center rounded-sm px-3 text-left text-sm hover:bg-surface"
-                      onClick={() => {
-                        applySubs(false);
-                        setSubMenu(false);
-                      }}
-                    >
-                      Off
-                    </button>
-                    {textTracks.map((track, i) => (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Subtitles"
+                data-player-ctrl="subs"
+                onClick={() => {
+                  setSubMenu(true);
+                  refreshTracks();
+                }}
+              >
+                <Subtitles className={cn("size-5", activeSub && "text-accent")} />
+              </Button>
+              {!item.isLive && (
+                <div className="relative">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Audio sync"
+                    data-player-ctrl="sync"
+                    onClick={() => setAudioSyncOpen((open) => !open)}
+                  >
+                    <AudioLines className={cn("size-5", audioDelay > 0 && "text-accent")} />
+                  </Button>
+                  {audioSyncOpen && (
+                    <div className="absolute right-0 bottom-12 w-64 rounded-md bg-elevated p-3 shadow-[var(--shadow-poster)]">
+                      <p className="text-sm font-medium">Audio sync</p>
+                      <p className="mt-0.5 text-xs text-subtle">
+                        Hold the sound back until it matches the picture.
+                      </p>
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="icon-sm"
+                          aria-label="Less audio delay"
+                          onClick={() => changeAudioDelay(audioDelay - AUDIO_DELAY_STEP_MS)}
+                        >
+                          −
+                        </Button>
+                        <span className="flex-1 text-center font-display text-lg tabular-nums">
+                          {formatAudioDelay(audioDelay)}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="icon-sm"
+                          aria-label="More audio delay"
+                          onClick={() => changeAudioDelay(audioDelay + AUDIO_DELAY_STEP_MS)}
+                        >
+                          +
+                        </Button>
+                      </div>
                       <button
-                        key={track.language || track.label || i}
                         type="button"
-                        className={cn(
-                          "flex h-9 w-full items-center rounded-sm px-3 text-left text-sm hover:bg-surface",
-                          subsOn && subIndex === i && "text-accent",
-                        )}
-                        onClick={() => {
-                          applySubs(true, i);
-                          setSubMenu(false);
-                        }}
+                        className="mt-2 h-9 w-full rounded-sm text-xs text-muted hover:bg-surface hover:text-fg"
+                        onClick={() => changeAudioDelay(0)}
                       >
-                        {track.label || track.language || `Track ${i + 1}`}
+                        Reset
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      {audioSyncError && (
+                        <p className="mt-1 text-xs text-accent">
+                          This browser will not let the app delay the audio.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <Button variant="ghost" size="sm" data-player-ctrl="aspect" onClick={cycleAspect}>
                 {ASPECT_MODES.find((m) => m.id === aspect)?.label}
               </Button>
@@ -843,6 +1109,32 @@ export function VideoPlayer({ item }: { item: Playable }) {
           {error && <p className="text-sm text-accent">{error}</p>}
         </div>
       </div>
+
+      {subMenu && (
+        <SubtitleMenu
+          open
+          onClose={() => {
+            setSubMenu(false);
+            bumpChrome();
+          }}
+          options={subOptions}
+          activeId={activeSub}
+          onSelect={(id) => {
+            applySub(id);
+            setSubMenu(false);
+            bumpChrome();
+          }}
+          onLoaded={(sub) => {
+            pendingSubRef.current = sub.id;
+            setExternalSubs((subs) =>
+              subs.some((row) => row.id === sub.id) ? subs : [...subs, sub],
+            );
+          }}
+          defaultQuery={subtitleQuery.query}
+          season={subtitleQuery.season}
+          episode={subtitleQuery.episode}
+        />
+      )}
     </div>
   );
 }

@@ -23,6 +23,8 @@ function ShowPage() {
   const [favorited, toggleFav] = useIsFavorite("show", showId);
   const [epIndex, setEpIndex] = useState(0);
   const [zone, setZone] = useState<"play" | "fav" | "seasons" | "episodes">("play");
+  // Nothing is highlighted until a remote/d-pad is actually used.
+  const [tvActive, setTvActive] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -76,6 +78,7 @@ function ShowPage() {
         return false;
       }
       enableTvMode();
+      setTvActive(true);
       const playFirst = () => {
         const ep = visible[0] ?? visible[epIndex];
         if (ep) void navigate({ to: "/watch", search: { kind: "episode", id: ep.id } });
@@ -133,9 +136,9 @@ function ShowPage() {
   );
 
   useEffect(() => {
-    if (zone !== "episodes") return;
+    if (!tvActive || zone !== "episodes") return;
     document.querySelector<HTMLElement>(`[data-ep-index="${epIndex}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [epIndex, zone]);
+  }, [epIndex, zone, tvActive]);
 
   if (loading) {
     return (
@@ -192,7 +195,7 @@ function ShowPage() {
                   onClick={() =>
                     navigate({ to: "/watch", search: { kind: "episode", id: visible[0]!.id } })
                   }
-                  className={cn(zone === "play" && "tv-focused")}
+                  className={cn(tvActive && zone === "play" && "tv-focused")}
                   data-tv-node="play"
                 >
                   <Play className="ml-0.5 size-4 fill-current" />
@@ -202,7 +205,7 @@ function ShowPage() {
               <Button
                 variant="secondary"
                 onClick={toggleFav}
-                className={cn(zone === "fav" && "tv-focused")}
+                className={cn(tvActive && zone === "fav" && "tv-focused")}
                 data-tv-node="fav"
               >
                 <Heart className={cn("size-4", favorited && "fill-accent text-accent")} />
@@ -224,7 +227,7 @@ function ShowPage() {
               className={cn(
                 "h-11 shrink-0 rounded-full px-4 text-sm font-medium",
                 season === s ? "bg-fg text-bg" : "bg-elevated text-muted hover:text-fg",
-                zone === "seasons" && season === s && "tv-focused",
+                tvActive && zone === "seasons" && season === s && "tv-focused",
               )}
             >
               Season {s}
@@ -242,7 +245,7 @@ function ShowPage() {
               onClick={() => navigate({ to: "/watch", search: { kind: "episode", id: ep.id } })}
               className={cn(
                 "flex min-h-16 items-center gap-3 rounded-lg bg-surface px-3 py-3 text-left shadow-[var(--shadow-border)] hover:shadow-[var(--shadow-border-hover)]",
-                zone === "episodes" && index === epIndex && "tv-focused",
+                tvActive && zone === "episodes" && index === epIndex && "tv-focused",
               )}
             >
               <span className="w-10 text-sm tabular-nums text-muted">{ep.episode}</span>

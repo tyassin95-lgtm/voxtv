@@ -73,10 +73,38 @@ export function objectFitFor(mode: AspectMode): "contain" | "cover" | "fill" {
   return "contain";
 }
 
-export function aspectRatioFor(mode: AspectMode): string | undefined {
-  if (mode === "16:9") return "16 / 9";
-  if (mode === "4:3") return "4 / 3";
+export function aspectRatioFor(mode: AspectMode): number | undefined {
+  if (mode === "16:9") return 16 / 9;
+  if (mode === "4:3") return 4 / 3;
   return undefined;
+}
+
+export interface VideoBox {
+  width: number;
+  height: number;
+  objectFit: "contain" | "cover" | "fill";
+}
+
+/**
+ * Resolve the exact pixel box the <video> should occupy for an aspect mode.
+ *
+ * The video element fills its container, so a CSS `aspect-ratio` alone is
+ * ignored (both dimensions are already definite). Forced ratios therefore need
+ * a measured box: letterbox the container to the target ratio and stretch the
+ * picture into it.
+ */
+export function videoBoxFor(mode: AspectMode, containerW: number, containerH: number): VideoBox {
+  const width = Math.max(0, Math.round(containerW));
+  const height = Math.max(0, Math.round(containerH));
+  const ratio = aspectRatioFor(mode);
+  if (!ratio || width === 0 || height === 0) {
+    return { width, height, objectFit: objectFitFor(mode) };
+  }
+  const boxed =
+    width / height > ratio
+      ? { width: Math.round(height * ratio), height }
+      : { width, height: Math.round(width / ratio) };
+  return { ...boxed, objectFit: "fill" };
 }
 
 const ASPECT_LS = "vox-iptv-aspect";
