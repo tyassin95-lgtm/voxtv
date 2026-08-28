@@ -53,13 +53,12 @@ jobs:
           path: ~/.android/debug.keystore
           key: voxtv-android-debug-keystore-v1
 
-      - name: Test the native layer
+      # One invocation: the Android toolchain is downloaded once, and a stalled
+      # build is caught by the step timeout rather than the job timeout.
+      - name: Test and build the APK
         working-directory: android
-        run: ./gradlew --no-daemon testDebugUnitTest
-
-      - name: Build APK
-        working-directory: android
-        run: ./gradlew --no-daemon assembleRelease
+        timeout-minutes: 20
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleRelease
 
       - name: Name the APK
         run: |
