@@ -162,7 +162,16 @@ class MainActivity : Activity() {
       }
 
       override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-        Log.d(TAG, "web: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+        // Every console line costs a JNI hop and a logcat write; keep the noisy
+        // levels for debug builds and always surface warnings and errors.
+        val level = message.messageLevel()
+        val loud = level == ConsoleMessage.MessageLevel.ERROR ||
+          level == ConsoleMessage.MessageLevel.WARNING
+        if (loud) {
+          Log.w(TAG, "web: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+        } else if (BuildConfig.DEBUG) {
+          Log.d(TAG, "web: ${message.message()}")
+        }
         return true
       }
     }
@@ -192,19 +201,19 @@ class MainActivity : Activity() {
    * into the same `KeyboardEvent`s the web build already listens for.
    */
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-      if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-        onBackRequested()
-        return true
-      }
-      val webKey = webKeyFor(event.keyCode)
-      if (webKey != null) {
-        sendKeyToPage(webKey)
-        return true
-      }
+    val webKey = webKeyFor(event.keyCode)
+    val ours = webKey != null || event.keyCode == KeyEvent.KEYCODE_BACK
+    // A forwarded key has to be swallowed for its whole lifecycle. Letting the
+    // key-up (or an auto-repeat) reach the web view delivered a second event
+    // the page counted as another press — one tap on fast-forward seeked twice.
+    if (!ours) return super.dispatchKeyEvent(event)
+    if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return true
+    if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+      onBackRequested()
+      return true
     }
-    if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_BACK) return true
-    return super.dispatchKeyEvent(event)
+    sendKeyToPage(webKey!!)
+    return true
   }
 
   private fun webKeyFor(keyCode: Int): String? = when (keyCode) {

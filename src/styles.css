@@ -137,6 +137,13 @@ body,
   z-index: 2;
 }
 
+/* Focus has to look instant on a stick; 220ms reads as lag while scrolling. */
+.tv-mode .poster-scale {
+  transition:
+    transform 110ms var(--ease-smooth-out),
+    box-shadow 110ms var(--ease-smooth-out);
+}
+
 .tv-mode [data-hover-overlay] {
   opacity: 0;
 }

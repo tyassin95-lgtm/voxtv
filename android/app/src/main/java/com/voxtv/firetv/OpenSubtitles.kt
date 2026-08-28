@@ -1,10 +1,17 @@
 package com.voxtv.firetv
 
+import android.util.Log
 import java.io.ByteArrayInputStream
+import java.io.InterruptedIOException
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
+import java.net.ConnectException
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
+import javax.net.ssl.SSLException
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,6 +26,60 @@ object OpenSubtitles {
   private const val OS_USER_AGENT = "TemporaryUserAgent"
   private const val MAX_RESULTS = 12
   private const val MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
+  private const val TAG = "VoxSubs"
+
+  /**
+   * Subtitles get their own client: the streaming one deliberately has no
+   * timeouts, so a stalled lookup used to hang until the socket died rather
+   * than telling the user anything.
+   */
+  private val http: OkHttpClient by lazy {
+    IptvProxy.client.newBuilder()
+      .connectTimeout(10, TimeUnit.SECONDS)
+      .readTimeout(20, TimeUnit.SECONDS)
+      .callTimeout(25, TimeUnit.SECONDS)
+      .build()
+  }
+
+  /** What actually went wrong, so the sheet can say something useful. */
+  private data class Failure(val code: String, val message: String, val retryable: Boolean)
+
+  private fun classify(err: Exception): Failure = when (err) {
+    is UnknownHostException -> Failure(
+      "offline",
+      "No internet connection, or opensubtitles.org could not be resolved.",
+      true,
+    )
+    is ConnectException -> Failure(
+      "unreachable",
+      "opensubtitles.org refused the connection. It may be down — try again shortly.",
+      true,
+    )
+    is SSLException -> Failure(
+      "tls",
+      "The secure connection to opensubtitles.org failed. Check the device date and time.",
+      false,
+    )
+    is InterruptedIOException -> Failure(
+      "timeout",
+      "opensubtitles.org took too long to answer. Try again.",
+      true,
+    )
+    else -> Failure("network", "Could not reach OpenSubtitles: ${err.javaClass.simpleName}.", true)
+  }
+
+  private fun statusFailure(code: Int): Failure = when (code) {
+    401, 403 -> Failure("rejected", "OpenSubtitles rejected the request (${code}).", false)
+    429 -> Failure("rate-limited", "OpenSubtitles is rate limiting requests. Try again in a minute.", true)
+    in 500..599 -> Failure("server", "OpenSubtitles is having trouble (${code}). Try again shortly.", true)
+    else -> Failure("http", "OpenSubtitles search failed (${code}).", code != 404)
+  }
+
+  private fun errorBody(failure: Failure): ServerResponse = ServerResponse.text(
+    502,
+    """{"error":${Json.quote(failure.message)},"code":${Json.quote(failure.code)},"retryable":${failure.retryable}}""",
+    "application/json",
+  )
 
   private val NOISE = Regex(
     "\\b(1080p|720p|480p|2160p|4k|uhd|hdr|web-?dl|webrip|bluray|brrip|hdrip|dvdrip|x264|x265|h264|h265|hevc|aac|ac3|dts|hdtv|multi|dual|sub|vo?stfr)\\b",
@@ -55,43 +116,63 @@ object OpenSubtitles {
       .header("User-Agent", OS_USER_AGENT)
       .header("Accept", accept)
       .build()
-    return IptvProxy.client.newCall(req).execute()
+    // No explicit Accept-Encoding: OkHttp then negotiates gzip and unwraps the
+    // body itself. Setting it by hand hands back compressed bytes.
+    return http.newCall(req).execute()
+  }
+
+  /** One retry, because the legacy endpoint drops connections fairly often. */
+  private fun requestWithRetry(url: String, accept: String): Result<okhttp3.Response> {
+    var last: Exception? = null
+    for (attempt in 0 until 2) {
+      try {
+        return Result.success(request(url, accept))
+      } catch (err: Exception) {
+        last = err
+        Log.w(TAG, "attempt ${attempt + 1} failed for ${url.substringBefore("?")}", err)
+        if (err is SSLException) break
+        try {
+          Thread.sleep(400)
+        } catch (_: InterruptedException) {
+          Thread.currentThread().interrupt()
+          break
+        }
+      }
+    }
+    return Result.failure(last ?: Exception("unknown"))
   }
 
   fun search(query: String, langs: List<String>, season: Int?, episode: Int?): ServerResponse {
     val normalized = normalizeQuery(query)
     if (normalized.isEmpty()) return ServerResponse.text(200, """{"results":[]}""", "application/json")
     val url = buildSearchUrl(normalized, langs, season, episode)
-    val body: String
-    try {
-      request(url, "application/json").use { res ->
-        if (!res.isSuccessful) {
-          val message = if (res.code == 429) {
-            "OpenSubtitles is rate limiting requests. Try again in a minute."
-          } else {
-            "OpenSubtitles search failed (${res.code})."
-          }
-          return ServerResponse.text(502, """{"error":${Json.quote(message)}}""", "application/json")
-        }
-        body = res.body?.string() ?: "[]"
-      }
-    } catch (err: Exception) {
-      return ServerResponse.text(
-        502,
-        """{"error":${Json.quote("Could not reach OpenSubtitles. Check your connection and try again.")}}""",
-        "application/json",
-      )
+    val attempt = requestWithRetry(url, "application/json")
+    val response = attempt.getOrElse { err ->
+      return errorBody(classify(err as? Exception ?: Exception(err)))
     }
-    val results = parseResults(body, langs)
+    val body: String
+    response.use { res ->
+      if (!res.isSuccessful) {
+        Log.w(TAG, "search http ${res.code}")
+        return errorBody(statusFailure(res.code))
+      }
+      body = runCatching { res.body?.string() ?: "" }.getOrDefault("")
+    }
+    if (body.isBlank()) {
+      // The legacy endpoint answers 200 with an empty body when it finds nothing.
+      return ServerResponse.text(200, """{"results":[]}""", "application/json")
+    }
+    val results = runCatching { parseResults(body, langs) }.getOrNull()
+      ?: return errorBody(
+        Failure("invalid", "OpenSubtitles returned something this app could not read.", true),
+      )
+    Log.i(TAG, "search ok")
     return ServerResponse.text(200, """{"results":$results}""", "application/json")
   }
 
+  /** Throws on a payload that is not the array the endpoint promises. */
   private fun parseResults(payload: String, langs: List<String>): String {
-    val rows = try {
-      JSONArray(payload)
-    } catch (_: Exception) {
-      return "[]"
-    }
+    val rows = JSONArray(payload)
     val wanted = langs.toSet()
     val buckets = LinkedHashMap<String, MutableList<JSONObject>>()
     for (i in 0 until rows.length()) {
@@ -149,32 +230,33 @@ object OpenSubtitles {
     if (!url.isNullOrBlank() && isOpenSubtitlesUrl(url)) candidates.add(url)
     candidates.add("https://dl.opensubtitles.org/en/download/subencoding-utf8/file/${Http.encodeComponent(id)}")
 
-    var lastError = "Could not download that subtitle."
+    var lastFailure = Failure("download", "Could not download that subtitle.", true)
     for (candidate in candidates) {
       try {
         request(candidate, "*/*").use { res ->
           if (!res.isSuccessful) {
-            lastError = "OpenSubtitles download failed (${res.code})."
+            lastFailure = statusFailure(res.code)
             return@use
           }
           val raw = res.body?.bytes() ?: ByteArray(0)
           if (raw.size > MAX_SUBTITLE_BYTES) {
-            lastError = "That subtitle file is too large."
+            lastFailure = Failure("too-large", "That subtitle file is too large.", false)
             return@use
           }
           val bytes = if (looksGzipped(raw)) gunzip(raw) else raw
           val vtt = srtToVtt(decodeSubtitle(bytes, lang))
           if (!vtt.contains("-->")) {
-            lastError = "That subtitle file could not be read."
+            lastFailure = Failure("invalid", "That subtitle file could not be read.", false)
             return@use
           }
           return ServerResponse.text(200, vtt, "text/vtt")
         }
       } catch (err: Exception) {
-        lastError = "Could not reach OpenSubtitles. Check your connection and try again."
+        Log.w(TAG, "download failed", err)
+        lastFailure = classify(err)
       }
     }
-    return ServerResponse.text(502, """{"error":${Json.quote(lastError)}}""", "application/json")
+    return errorBody(lastFailure)
   }
 
   fun looksGzipped(bytes: ByteArray): Boolean =

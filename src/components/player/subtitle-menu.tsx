@@ -5,6 +5,7 @@ import { useBackHandler, useRemoteHandler } from "@/components/remote-root";
 import {
   loadSubtitleTrackUrl,
   searchSubtitles,
+  SubtitleLookupError,
   SUBTITLE_LANGS,
   type SubtitleHit,
   type SubtitleLang,
@@ -56,6 +57,7 @@ export function SubtitleMenu({
   const [searching, setSearching] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const runSearch = useCallback(
@@ -68,6 +70,7 @@ export function SubtitleMenu({
       }
       setSearching(true);
       setMessage(null);
+      setFailed(false);
       try {
         const hits = await searchSubtitles({ query: trimmed, langs: [nextLang], season, episode });
         setResults(hits);
@@ -75,6 +78,8 @@ export function SubtitleMenu({
       } catch (err) {
         setResults([]);
         setMessage(err instanceof Error ? err.message : "Subtitle search failed.");
+        // A lookup that failed is worth offering again; "nothing found" is not.
+        setFailed(err instanceof SubtitleLookupError ? err.retryable : true);
       } finally {
         setSearching(false);
       }
@@ -282,9 +287,18 @@ export function SubtitleMenu({
                 }
                 onClick={() => void runSearch(query, lang)}
               >
-                {searching ? "Searching…" : "Search"}
+                {searching ? "Searching…" : failed ? "Try again" : "Search"}
               </Row>
-              {message && <p className="px-3 py-2 text-xs leading-relaxed text-muted">{message}</p>}
+              {message && (
+                <p
+                  className={cn(
+                    "px-3 py-2 text-xs leading-relaxed",
+                    failed ? "text-accent" : "text-muted",
+                  )}
+                >
+                  {message}
+                </p>
+              )}
               {results.map((hit) => (
                 <Row
                   key={hit.id}

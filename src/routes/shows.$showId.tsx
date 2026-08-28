@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Heart, Play } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,8 @@ function ShowPage() {
   const [zone, setZone] = useState<"play" | "fav" | "seasons" | "episodes">("play");
   // Nothing is highlighted until a remote/d-pad is actually used.
   const [tvActive, setTvActive] = useState(false);
+  const tvActiveRef = useRef(false);
+  tvActiveRef.current = tvActive;
 
   useEffect(() => {
     let live = true;
@@ -78,7 +80,12 @@ function ShowPage() {
         return false;
       }
       enableTvMode();
+      // The first press reveals the cursor where it already is instead of
+      // stepping past the Play button.
+      const wasActive = tvActiveRef.current;
+      tvActiveRef.current = true;
       setTvActive(true);
+      if (!wasActive) return true;
       const playFirst = () => {
         const ep = visible[0] ?? visible[epIndex];
         if (ep) void navigate({ to: "/watch", search: { kind: "episode", id: ep.id } });
@@ -137,7 +144,9 @@ function ShowPage() {
 
   useEffect(() => {
     if (!tvActive || zone !== "episodes") return;
-    document.querySelector<HTMLElement>(`[data-ep-index="${epIndex}"]`)?.scrollIntoView({ block: "nearest" });
+    document
+      .querySelector<HTMLElement>(`[data-ep-index="${epIndex}"]`)
+      ?.scrollIntoView({ block: "nearest" });
   }, [epIndex, zone, tvActive]);
 
   if (loading) {
@@ -184,11 +193,17 @@ function ShowPage() {
             </button>
             <h1 className="font-display text-3xl font-semibold tracking-tight">{show.name}</h1>
             <p className="mt-2 text-sm text-muted">
-              {[show.year, show.rating, `${seasons.length} season${seasons.length === 1 ? "" : "s"}`]
+              {[
+                show.year,
+                show.rating,
+                `${seasons.length} season${seasons.length === 1 ? "" : "s"}`,
+              ]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
-            {show.plot && <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">{show.plot}</p>}
+            {show.plot && (
+              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">{show.plot}</p>
+            )}
             <div className="mt-4 flex gap-2">
               {visible[0] && (
                 <Button

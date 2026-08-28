@@ -115,6 +115,8 @@ export function Onboarding() {
                   placeholder="https://provider.example/playlist.m3u"
                   autoComplete="url"
                   inputMode="url"
+                  // The setup screen must open with something focused.
+                  autoFocus
                   required
                 />
               </label>

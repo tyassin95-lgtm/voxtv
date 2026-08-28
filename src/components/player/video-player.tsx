@@ -49,7 +49,7 @@ import { iptvLog, iptvWarn, redactUrl } from "@/lib/iptv/log";
 import { probeStream, releaseStreams } from "@/lib/iptv/proxy";
 import { engineForKind, type StreamKind } from "@/lib/iptv/stream-detect";
 import { unwrapProxiedUrl } from "@/lib/iptv/playback-urls";
-import { enableTvMode, seekStep } from "@/lib/iptv/remote";
+import { enableTvMode } from "@/lib/iptv/remote";
 import { neighborInBrowseList } from "@/lib/iptv/browse-list";
 
 interface TsPlayer {
@@ -78,6 +78,7 @@ interface MpegtsLib {
 }
 
 const LIVE_DROPOUT_RETRIES = 2;
+const SEEK_STEP = 10;
 const VOLUME_STEP = 0.05;
 const VOLUME_COARSE = 0.2;
 
@@ -137,8 +138,8 @@ export function VideoPlayer({ item }: { item: Playable }) {
   const [seekFlash, setSeekFlash] = useState<string | null>(null);
   const [playerCtrl, setPlayerCtrl] = useState("play");
   const chromeRef = useRef(true);
-  const seekHoldRef = useRef(0);
   const seekPendingRef = useRef<number | null>(null);
+  const leavingRef = useRef(false);
   const seekTimer = useRef<number | null>(null);
   const flashTimer = useRef<number | null>(null);
   chromeRef.current = chrome;
@@ -596,6 +597,16 @@ export function VideoPlayer({ item }: { item: Playable }) {
   // Downloaded subtitles are object URLs; drop them when the player goes away.
   useEffect(() => releaseSubtitleUrls, []);
 
+  // Nothing should be left ticking after the player unmounts.
+  useEffect(
+    () => () => {
+      if (hideTimer.current) window.clearTimeout(hideTimer.current);
+      if (flashTimer.current) window.clearTimeout(flashTimer.current);
+      if (seekTimer.current) window.clearTimeout(seekTimer.current);
+    },
+    [],
+  );
+
   // A queued seek belongs to the title that was playing when it was queued.
   useEffect(() => {
     return () => {
@@ -629,6 +640,9 @@ export function VideoPlayer({ item }: { item: Playable }) {
   }
 
   function leavePlayer() {
+    // Two fast Back presses used to queue two navigations.
+    if (leavingRef.current) return;
+    leavingRef.current = true;
     if (item.kind === "episode" && item.showId) {
       void navigate({ to: "/shows/$showId", params: { showId: item.showId } });
       return;
@@ -733,17 +747,21 @@ export function VideoPlayer({ item }: { item: Playable }) {
         }
       }
 
+      /**
+       * One intentional press moves exactly SEEK_STEP seconds. Auto-repeat is
+       * ignored outright: a remote key that lingers a few hundred milliseconds
+       * used to stack accelerating jumps onto a single tap.
+       */
       const doSeek = (dir: number) => {
-        if (event.repeat) seekHoldRef.current += 1;
-        else seekHoldRef.current = 0;
-        const step = seekStep(seekHoldRef.current) * dir;
+        if (event.repeat) return;
+        const step = SEEK_STEP * dir;
         const ok = seekBy(step);
         if (!ok && item.isLive) {
           const skipped = skipLive(dir);
           flashSeek(skipped ? (dir > 0 ? "Next channel" : "Previous channel") : "Live");
           return;
         }
-        flashSeek(`${step > 0 ? "+" : ""}${step}s`);
+        flashSeek(seekFlashLabel());
       };
 
       if (action === "rewind") {
@@ -862,6 +880,15 @@ export function VideoPlayer({ item }: { item: Playable }) {
     if (seekTimer.current) window.clearTimeout(seekTimer.current);
     seekTimer.current = window.setTimeout(commitSeek, 320);
     return true;
+  }
+
+  /** How far the queued seek moves from where playback actually is. */
+  function seekFlashLabel(): string {
+    const video = videoRef.current;
+    const target = seekPendingRef.current;
+    if (!video || target === null) return "";
+    const delta = Math.round(target - video.currentTime);
+    return `${delta > 0 ? "+" : ""}${delta}s`;
   }
 
   function commitSeek() {
@@ -1027,6 +1054,8 @@ export function VideoPlayer({ item }: { item: Playable }) {
               value={Math.min(current, duration)}
               onChange={(e) => onSeek(Number(e.target.value))}
               className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-fg/20 accent-accent"
+              tabIndex={-1}
+              aria-label="Seek"
             />
           )}
           <div className="flex items-center gap-2">
@@ -1049,9 +1078,15 @@ export function VideoPlayer({ item }: { item: Playable }) {
               aria-label="Rewind"
               data-player-ctrl="rewind"
               onClick={() => {
-                const ok = seekBy(-10);
+                const ok = seekBy(-SEEK_STEP);
                 flashSeek(
-                  ok ? "-10s" : item.isLive ? (skipLive(-1) ? "Previous channel" : "Live") : "-10s",
+                  ok
+                    ? seekFlashLabel()
+                    : item.isLive
+                      ? skipLive(-1)
+                        ? "Previous channel"
+                        : "Live"
+                      : `-${SEEK_STEP}s`,
                 );
               }}
             >
@@ -1063,9 +1098,15 @@ export function VideoPlayer({ item }: { item: Playable }) {
               aria-label="Fast forward"
               data-player-ctrl="forward"
               onClick={() => {
-                const ok = seekBy(10);
+                const ok = seekBy(SEEK_STEP);
                 flashSeek(
-                  ok ? "+10s" : item.isLive ? (skipLive(1) ? "Next channel" : "Live") : "+10s",
+                  ok
+                    ? seekFlashLabel()
+                    : item.isLive
+                      ? skipLive(1)
+                        ? "Next channel"
+                        : "Live"
+                      : `+${SEEK_STEP}s`,
                 );
               }}
             >

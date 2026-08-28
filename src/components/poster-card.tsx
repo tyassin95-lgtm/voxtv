@@ -29,6 +29,7 @@ export function PosterCard({
           src={proxiedImageUrl(image) || image}
           alt=""
           loading="lazy"
+          decoding="async"
           className="absolute inset-0 size-full object-cover"
         />
         <span
@@ -112,6 +113,7 @@ export function WideCard({
           src={proxiedImageUrl(image) || image}
           alt=""
           loading="lazy"
+          decoding="async"
           className="absolute inset-0 size-full object-cover"
         />
         <span

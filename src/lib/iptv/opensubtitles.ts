@@ -19,6 +19,17 @@ const OS_USER_AGENT = "TemporaryUserAgent";
 const MAX_RESULTS = 12;
 const MAX_SUBTITLE_BYTES = 2 * 1024 * 1024;
 
+/** Carries a machine-readable reason so the player can offer the right retry. */
+export class SubtitleError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SubtitleError";
+  }
+}
+
 /** Strip release noise so "Movie.Name.2019.1080p.WEB" still matches. */
 export function normalizeQuery(raw: string): string {
   return raw
@@ -111,6 +122,25 @@ export function parseSearchResults(payload: unknown, langs: SubtitleLang[]): Sub
   return ordered;
 }
 
+export function statusError(status: number): SubtitleError {
+  if (status === 401 || status === 403) {
+    return new SubtitleError("rejected", `OpenSubtitles rejected the request (${status}).`);
+  }
+  if (status === 429) {
+    return new SubtitleError(
+      "rate-limited",
+      "OpenSubtitles is rate limiting requests. Try again in a minute.",
+    );
+  }
+  if (status >= 500) {
+    return new SubtitleError(
+      "server",
+      `OpenSubtitles is having trouble (${status}). Try again shortly.`,
+    );
+  }
+  return new SubtitleError("http", `OpenSubtitles search failed (${status}).`);
+}
+
 async function osFetch(url: string, accept: string, timeoutMs: number): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -128,14 +158,36 @@ async function fetchOrThrow(url: string, accept: string, signal: AbortSignal): P
         "X-User-Agent": OS_USER_AGENT,
         "User-Agent": OS_USER_AGENT,
         Accept: accept,
-        "Accept-Encoding": "gzip, identity",
       },
       redirect: "follow",
       signal,
     });
   } catch (err) {
-    iptvWarn("subs", "network", err instanceof Error ? err.message : err);
-    throw new Error("Could not reach OpenSubtitles. Check your connection and try again.");
+    const cause = err instanceof Error ? ((err as Error & { cause?: Error }).cause ?? err) : null;
+    const detail = cause instanceof Error ? cause.message : String(err);
+    iptvWarn("subs", "network", detail);
+    if (signal.aborted) {
+      throw new SubtitleError("timeout", "opensubtitles.org took too long to answer. Try again.");
+    }
+    if (/enotfound|eai_again|getaddrinfo/i.test(detail)) {
+      throw new SubtitleError(
+        "offline",
+        "No internet connection, or opensubtitles.org could not be resolved.",
+      );
+    }
+    if (/econnrefused|econnreset|ehostunreach|enetunreach/i.test(detail)) {
+      throw new SubtitleError(
+        "unreachable",
+        "opensubtitles.org refused the connection. It may be down — try again shortly.",
+      );
+    }
+    if (/certificate|tls|ssl/i.test(detail)) {
+      throw new SubtitleError(
+        "tls",
+        "The secure connection to opensubtitles.org failed. Check the device date and time.",
+      );
+    }
+    throw new SubtitleError("network", "Could not reach OpenSubtitles. Try again.");
   }
 }
 
@@ -152,13 +204,12 @@ export async function searchSubtitles(opts: {
   const res = await osFetch(url, "application/json", 15000);
   if (!res.ok) {
     iptvWarn("subs", "search failed", res.status);
-    throw new Error(
-      res.status === 429
-        ? "OpenSubtitles is rate limiting requests. Try again in a minute."
-        : `OpenSubtitles search failed (${res.status}).`,
-    );
+    throw statusError(res.status);
   }
   const payload = (await res.json().catch(() => null)) as unknown;
+  if (payload === null) {
+    throw new SubtitleError("invalid", "OpenSubtitles returned something this app could not read.");
+  }
   const hits = parseSearchResults(payload, opts.langs);
   iptvLog("subs", "search results", hits.length);
   return hits;

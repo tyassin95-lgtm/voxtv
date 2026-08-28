@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { optionsResponse } from "@/lib/iptv/server-proxy";
-import { downloadSubtitle, searchSubtitles } from "@/lib/iptv/opensubtitles";
+import { downloadSubtitle, searchSubtitles, SubtitleError } from "@/lib/iptv/opensubtitles";
 import { isSubtitleLang, type SubtitleLang } from "@/lib/iptv/subtitle-types";
 
 function json(body: unknown, status = 200): Response {
@@ -65,7 +65,12 @@ export const Route = createFileRoute("/api/iptv/subtitles")({
           return json({ results });
         } catch (err) {
           const message = err instanceof Error ? err.message : "Subtitle lookup failed.";
-          return json({ error: message }, 502);
+          const code = err instanceof SubtitleError ? err.code : "unknown";
+          // Never swallowed: the client shows the reason and offers a retry.
+          return json(
+            { error: message, code, retryable: code !== "rejected" && code !== "tls" },
+            502,
+          );
         }
       },
     },

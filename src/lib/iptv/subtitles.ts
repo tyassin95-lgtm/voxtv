@@ -9,6 +9,17 @@ import { SUBTITLE_LANGS, type SubtitleHit, type SubtitleLang } from "./subtitle-
 export type { SubtitleHit, SubtitleLang };
 export { SUBTITLE_LANGS };
 
+export class SubtitleLookupError extends Error {
+  constructor(
+    message: string,
+    readonly code: string = "unknown",
+    readonly retryable = true,
+  ) {
+    super(message);
+    this.name = "SubtitleLookupError";
+  }
+}
+
 export interface SubtitleSearchInput {
   query: string;
   langs: SubtitleLang[];
@@ -83,12 +94,17 @@ export async function loadSubtitleTrackUrl(
   const text = await res.text();
   if (!res.ok) {
     let message = "Could not download that subtitle.";
+    let code = "download";
+    let retryable = true;
     try {
-      message = (JSON.parse(text) as { error?: string }).error || message;
+      const parsed = JSON.parse(text) as { error?: string; code?: string; retryable?: boolean };
+      message = parsed.error || message;
+      code = parsed.code ?? code;
+      retryable = parsed.retryable ?? true;
     } catch {
       /* plain text error */
     }
-    throw new Error(message);
+    throw new SubtitleLookupError(message, code, retryable);
   }
   const url = URL.createObjectURL(new Blob([text], { type: "text/vtt" }));
   vttCache.set(hit.id, url);

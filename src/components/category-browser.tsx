@@ -49,6 +49,17 @@ function storedCategoryKey(kind: ContentKind) {
   return `vox-iptv-cat-${kind}`;
 }
 
+/** Where the d-pad cursor was, so coming back from a title lands where you left. */
+function storedIndexKey(kind: ContentKind, categoryId: string) {
+  return `vox-iptv-pos-${kind}-${categoryId}`;
+}
+
+function readStoredIndex(kind: ContentKind, categoryId: string): number {
+  if (typeof sessionStorage === "undefined") return 0;
+  const raw = Number(sessionStorage.getItem(storedIndexKey(kind, categoryId)));
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
 function headerLinks(): HTMLAnchorElement[] {
   return [...document.querySelectorAll<HTMLAnchorElement>("header nav a")];
 }
@@ -80,7 +91,7 @@ export function CategoryBrowser({
   // Which category the d-pad is sitting on. Moving through the list must not
   // reload the grid — only pressing select (or stepping right into it) does.
   const [catCursor, setCatCursor] = useState<string>(categoryId);
-  const [gridIndex, setGridIndex] = useState(0);
+  const [gridIndex, setGridIndex] = useState(() => readStoredIndex(kind, categoryId));
   const [sortCursor, setSortCursor] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
   const tvActiveRef = useRef(false);
@@ -128,12 +139,37 @@ export function CategoryBrowser({
   });
 
   useEffect(() => {
-    parentRef.current?.scrollTo({ top: 0 });
-    setGridIndex(0);
-  }, [categoryId, query, sort]);
+    if (typeof sessionStorage === "undefined" || !tvActive) return;
+    sessionStorage.setItem(storedIndexKey(kind, categoryId), String(gridIndex));
+  }, [kind, categoryId, gridIndex, tvActive]);
+
+  const restoredFor = useRef("");
+  useEffect(() => {
+    const signature = `${categoryId}|${query}|${sort}`;
+    if (restoredFor.current === signature) return;
+    restoredFor.current = signature;
+    const restored = query ? 0 : readStoredIndex(kind, categoryId);
+    setGridIndex(restored);
+    if (!restored) parentRef.current?.scrollTo({ top: 0 });
+  }, [kind, categoryId, query, sort]);
+
+  // Bring a restored position into view even before the d-pad is used.
+  const scrolledFor = useRef("");
+  useEffect(() => {
+    if (!items.length) return;
+    const signature = `${categoryId}|${query}|${sort}`;
+    if (scrolledFor.current === signature) return;
+    scrolledFor.current = signature;
+    if (!gridIndex) return;
+    const row = isLive ? gridIndex : Math.floor(gridIndex / Math.max(columns, 1));
+    virtualizer.scrollToIndex(row, { align: "center" });
+  }, [items.length, categoryId, query, sort, gridIndex, isLive, columns, virtualizer]);
 
   useEffect(() => {
-    setGridIndex((index) => Math.max(0, Math.min(Math.max(items.length - 1, 0), index)));
+    // While the library is still loading the list is empty; clamping then would
+    // throw away a restored position before the tiles ever exist.
+    if (!items.length) return;
+    setGridIndex((index) => Math.max(0, Math.min(items.length - 1, index)));
   }, [items.length]);
 
   useEffect(() => {
@@ -859,6 +895,7 @@ function ChannelRow({
         alt=""
         className="size-10 rounded-sm bg-elevated object-contain"
         loading="lazy"
+        decoding="async"
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">
