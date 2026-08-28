@@ -1,0 +1,1 @@
+import{c as e}from"./useStore-LOmwgNWu.js";import{t}from"./app-shell-BkAGEDrz.js";import{t as n}from"./category-browser-DvJwUOH7.js";var r=e();function i(){return(0,r.jsx)(t,{fill:!0,children:(0,r.jsx)(n,{kind:`live`,title:`Live TV`,searchPlaceholder:`Search live TV`})})}export{i as component};

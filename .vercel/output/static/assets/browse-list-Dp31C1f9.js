@@ -1,0 +1,1 @@
+var e=[];function t(t,n){e=n}function n(t,n){if(!e.length)return null;let r=e.indexOf(t);if(r<0)return n>0?e[0]:e[e.length-1];let i=r+(n<0?-1:1);return i<0?e[e.length-1]:i>=e.length?e[0]:e[i]}export{t as n,n as t};
